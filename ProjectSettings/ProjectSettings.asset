@@ -1,0 +1,26 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!129 &1
+PlayerSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 26
+  productGUID: 2b1f0c9f4bea421e996d68a7b2c5b59d
+  companyName: DefaultCompany
+  productName: Yildiz Avcisi
+  defaultScreenWidth: 720
+  defaultScreenHeight: 1280
+  defaultScreenWidthWeb: 720
+  defaultScreenHeightWeb: 1280
+  m_SplashScreenBackgroundColor: {r: 0.035, g: 0.055, b: 0.12, a: 1}
+  m_UseOSAutorotation: 1
+  allowedAutorotateToPortrait: 1
+  allowedAutorotateToPortraitUpsideDown: 1
+  allowedAutorotateToLandscapeRight: 0
+  allowedAutorotateToLandscapeLeft: 0
+  useAnimatedAutorotation: 1
+  defaultInterfaceOrientation: 1
+  runInBackground: 1
+  usePlayerLog: 1
+  androidShowActivityIndicatorOnLoading: -1
+  androidStartInFullscreen: 1
+  androidRenderOutsideSafeArea: 1
