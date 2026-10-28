@@ -133,9 +133,9 @@ jobs:
               Select-Object Status, FriendlyName | Format-Table -AutoSize
 
             if (Test-VirtualAudioDevice) {
-              Write-Host "SANAL SES KARTI BASARIYLA KURULDU." 
+              Write-Host "SANAL SES KARTI BASARIYLA KURULDU."
             } else {
-              Write-Warning "SANAL SES KARTI GORUNMUYOR. Mikrofon icin istemci ayari ve alternatif gerekir."
+              Write-Warning "SANAL SES KARTI GORUNMUYOR."
             }
           } catch {
             Write-Warning "VB-Cable hatası: $($_.Exception.Message)"
@@ -157,15 +157,45 @@ jobs:
           "TAILSCALE_EXE=$tailscale" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Tailscale kuruldu."
 
-      - name: Connect Tailscale
+      - name: Connect Tailscale (DIAGNOSTIC)
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          $ErrorActionPreference = "Stop"
+          $ErrorActionPreference = "Continue"
+
+          $authKey = "$env:TAILSCALE_AUTH_KEY".Trim()
+          Write-Host "=== TEŞHİS ==="
+          Write-Host "Auth key uzunluğu: $($authKey.Length)"
+          if ($authKey.Length -ge 12) {
+            Write-Host "Auth key başı: $($authKey.Substring(0,12))..."
+          } else {
+            throw "Auth key çok kısa veya boş. Secret'ı kontrol et."
+          }
+          if ($authKey -notmatch '^tskey-auth-') {
+            Write-Warning "UYARI: Key 'tskey-auth-' ile başlamıyor. Yanlış anahtar olabilir."
+          }
+          if ($authKey -match '\s') {
+            throw "Auth key içinde boşluk/yeni satır var. Secret'a yeniden yapıştır."
+          }
+
+          & $env:TAILSCALE_EXE version
+          Write-Host ""
+
           $hostname = "gh-runner-$env:GITHUB_RUN_ID"
-          & $env:TAILSCALE_EXE up --auth-key="$env:TAILSCALE_AUTH_KEY" --hostname="$hostname"
-          if ($LASTEXITCODE -ne 0) { throw "Tailscale girişi başarısız." }
+          Write-Host "Bağlanıyor: $hostname"
+          $output = & $env:TAILSCALE_EXE up --auth-key="$authKey" --hostname="$hostname" 2>&1
+          $exitCode = $LASTEXITCODE
+
+          Write-Host ""
+          Write-Host "=== TAILSCALE ÇIKTISI ==="
+          Write-Host $output
+          Write-Host "Çıkış kodu: $exitCode"
+          Write-Host "========================="
+
+          if ($exitCode -ne 0) {
+            throw "Tailscale girişi başarısız (kod $exitCode). Yukarıdaki çıktıya bak."
+          }
 
           Start-Sleep -Seconds 3
           $ip = (& $env:TAILSCALE_EXE ip -4 | Select-Object -First 1).Trim()
@@ -182,10 +212,12 @@ jobs:
           Write-Host "  Yerel Kaynaklar > Ayarlar >"
           Write-Host "  'Bu bilgisayardan kaydet' ISARETLI olmali"
           Write-Host "=============================================="
-          Write-Host ""
 
       - name: Maintain Connection
         shell: pwsh
         run: |
           Write-Host "RDP 6 saat açık kalacak. IP: $env:RDP_IP | User: Draghyper"
-          Write-Host "Bu adımın bitmesini BEKLEME, IP görünü
+          Write-Host "Bu adımın bitmesini BEKLEME, IP görününce hemen bağlan."
+          for ($i = 1; $i -le 360; $i++) {
+            Start-Sleep -Seconds 60
+          }
