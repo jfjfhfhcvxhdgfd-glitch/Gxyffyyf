@@ -3,111 +3,243 @@ name: RDP
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Validate Secrets
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
+            throw "RDP_PASSWORD secret eksik."
+          }
+          if ($env:RDP_PASSWORD.Length -lt 12 -or
+              $env:RDP_PASSWORD -notmatch '[A-Z]' -or
+              $env:RDP_PASSWORD -notmatch '[a-z]' -or
+              $env:RDP_PASSWORD -notmatch '\d' -or
+              $env:RDP_PASSWORD -notmatch '[^a-zA-Z0-9]') {
+            throw "RDP_PASSWORD en az 12 karakter; büyük harf, küçük harf, rakam ve sembol içermeli."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
+            throw "TAILSCALE_AUTH_KEY secret eksik."
+          }
+          Write-Host "Gerekli secret kontrolleri tamamlandı."
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+      - name: Configure Windows RDP
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+          $securePassword = ConvertTo-SecureString `
+            $env:RDP_PASSWORD -AsPlainText -Force
+
+          $user = Get-LocalUser -Name "Draghyper" -ErrorAction SilentlyContinue
+
+          if ($null -eq $user) {
+            New-LocalUser -Name "Draghyper" `
+              -Password $securePassword `
+              -Description "RDP account" | Out-Null
+          } else {
+            Set-LocalUser -Name "Draghyper" -Password $securePassword
+          }
+
+          Add-LocalGroupMember -Group "Administrators" `
+            -Member "Draghyper" -ErrorAction SilentlyContinue
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name fDenyTSConnections -Value 0
+
+          $rdpPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+          Set-ItemProperty -Path $rdpPath -Name UserAuthentication -Value 1
+          Set-ItemProperty -Path $rdpPath -Name SecurityLayer -Value 2
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
+          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" `
+              -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -Name "RDP-Tailscale" `
+              -DisplayName "RDP over Tailscale" `
+              -Direction Inbound -Protocol TCP -LocalPort 3389 `
+              -Action Allow | Out-Null
+          }
+
+          Set-Service -Name TermService -StartupType Automatic
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User with Secure Password
+          Write-Host "Windows RDP ayarları tamamlandı."
+
+      - name: Enable RDP Audio and Microphone Redirection
+        shell: pwsh
         run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
+          $ErrorActionPreference = "Stop"
+
+          $policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          New-Item -Path $policyPath -Force | Out-Null
+
+          # 0 = ses kaydı/mikrofon yönlendirmesi engellenmesin
+          New-ItemProperty -Path $policyPath `
+            -Name fDisableAudioCapture -PropertyType DWord `
+            -Value 0 -Force | Out-Null
+
+          # 0 = ses çalma yönlendirmesi engellenmesin
+          New-ItemProperty -Path $policyPath `
+            -Name fDisableAudioPlayback -PropertyType DWord `
+            -Value 0 -Force | Out-Null
+
+          # Ses hizmetlerini etkinleştirmeyi ve başlatmayı dene
+          foreach ($serviceName in @("AudioEndpointBuilder", "Audiosrv")) {
+            $service = Get-Service -Name $serviceName `
+              -ErrorAction SilentlyContinue
+
+            if ($null -ne $service) {
+              try {
+                Set-Service -Name $serviceName -StartupType Automatic `
+                  -ErrorAction Stop
+                Start-Service -Name $serviceName -ErrorAction Stop
+                Write-Host "$serviceName başlatıldı."
+              } catch {
+                Write-Warning "$serviceName başlatılamadı: $($_.Exception.Message)"
+              }
+            } else {
+              Write-Warning "$serviceName bu Windows kurulumunda bulunamadı."
+            }
           }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
+
+          Write-Host "Mikrofon/ses yönlendirme ilkeleri:"
+          Get-ItemProperty -Path $policyPath |
+            Select-Object fDisableAudioCapture, fDisableAudioPlayback |
+            Format-List
+
+          Write-Host "Not: Mikrofonun görünmesi, RDP istemcisinin ve oturumun yönlendirmeyi desteklemesine de bağlıdır."
+
+          # Apply the computer policy before a new RDP session is created.
+          gpupdate /target:computer /force
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "gpupdate başarısız oldu; kayıt defteri ilkeleri yine de yazıldı."
           }
+
+          # Restart RDP after microphone redirection policy has been written.
+          Restart-Service -Name TermService -Force
+          Start-Sleep -Seconds 3
+          Write-Host "RDP servisi ses yönlendirme ilkelerinden sonra yeniden başlatıldı."
+
+      - name: Install Virtual Audio Cable (VB-Cable)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zipPath = "$env:TEMP\VBCable.zip"
+          $extractPath = "$env:TEMP\VBCable"
+          
+          Write-Host "Sanal ses kablosu (VB-Cable) indiriliyor..."
+          # VB-Cable Pack 43 İndirme Bağlantısı
+          Invoke-WebRequest -Uri "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip" -OutFile $zipPath
+          
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          
+          Write-Host "Sanal ses sürücüsü sessizce kuruluyor..."
+          # -i parametresi ile sessiz kurulum
+          Start-Process -FilePath "$extractPath\VBCABLE_Setup_x64.exe" -ArgumentList "-i" -Wait -NoNewWindow
+          
+          Write-Host "Windows ses servisleri yeniden başlatılıyor..."
+          Restart-Service -Name "Audiosrv", "AudioEndpointBuilder" -Force -ErrorAction SilentlyContinue
+          
+          Write-Host "Sanal ses kartı kurulumu tamamlandı. Mikrofon artık RDP tarafından görülebilir."
 
       - name: Install Tailscale
+        shell: pwsh
         run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
-          
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
-          Remove-Item $installerPath -Force
+          $ErrorActionPreference = "Stop"
+          $msi = Join-Path $env:TEMP "tailscale-setup.msi"
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
+            -OutFile $msi
 
-      - name: Establish Tailscale Connection
+          $process = Start-Process msiexec.exe `
+            -ArgumentList "/i `"$msi`" /quiet /norestart" `
+            -Wait -PassThru
+
+          if ($process.ExitCode -notin @(0, 3010)) {
+            throw "Tailscale kurulumu başarısız. Kod: $($process.ExitCode)"
+          }
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          if (-not (Test-Path $tailscale)) {
+            throw "Tailscale programı bulunamadı."
+          }
+
+          "TAILSCALE_EXE=$tailscale" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Connect Tailscale
+        shell: pwsh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
-          $tsIP = $null
-          $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
+          $ErrorActionPreference = "Stop"
+          $hostname = "gh-runner-$env:GITHUB_RUN_ID"
+
+          & $env:TAILSCALE_EXE up `
+            --auth-key="$env:TAILSCALE_AUTH_KEY" `
+            --hostname="$hostname"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Tailscale girişi başarısız. Auth key ve cihaz politikasını kontrol et."
           }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
+
+          Start-Sleep -Seconds 5
+          $ip = (& $env:TAILSCALE_EXE ip -4 | Select-Object -First 1).Trim()
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+            throw "Tailscale IPv4 adresi alınamadı."
           }
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-      
-      - name: Verify RDP Accessibility
+
+          "RDP_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Tailscale bağlantısı hazır."
+          Write-Host "RDP IP: $ip"
+          Write-Host "Kullanıcı adı: Draghyper"
+
+      - name: Verify RDP and Audio Policies
+        shell: pwsh
         run: |
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
-          Write-Host "TCP connectivity successful!"
+          $rdp = Get-ItemProperty `
+            "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
+          Write-Host "RDP etkin: $($rdp.fDenyTSConnections -eq 0)"
+
+          $policy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          $audio = Get-ItemProperty -Path $policy
+
+          Write-Host "Mikrofon yönlendirmesi engellenmiyor: $($audio.fDisableAudioCapture -eq 0)"
+          Write-Host "Ses çıkışı yönlendirmesi engellenmiyor: $($audio.fDisableAudioPlayback -eq 0)"
+
+          Get-NetTCPConnection -LocalPort 3389 -State Listen `
+            -ErrorAction SilentlyContinue |
+            Select-Object LocalAddress, LocalPort, State |
+            Format-Table
 
       - name: Maintain Connection
+        shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+          Write-Host "RDP oturumu 6 saate kadar açık tutulacak."
+          Write-Host "Adres: $env:RDP_IP"
+          Write-Host "Kullanıcı adı: Draghyper"
+          Write-Host "Parola, GitHub RDP_PASSWORD secret değeridir."
+          Write-Host "Parola güvenlik nedeniyle günlükte gösterilmiyor."
+
+          for ($i = 1; $i -le 360; $i++) {
+            Write-Host "Bağlantı aktif. Geçen süre: $i dakika"
+            Start-Sleep -Seconds 60
           }
