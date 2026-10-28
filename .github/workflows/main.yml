@@ -31,7 +31,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
             throw "TAILSCALE_AUTH_KEY secret eksik."
           }
-          Write-Host "Gerekli secret kontrolleri tamamlandı."
+          Write-Host "Secret kontrolleri tamam."
 
       - name: Configure Windows RDP
         shell: pwsh
@@ -39,118 +39,106 @@ jobs:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $ErrorActionPreference = "Stop"
-
-          $securePassword = ConvertTo-SecureString `
-            $env:RDP_PASSWORD -AsPlainText -Force
+          $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
 
           $user = Get-LocalUser -Name "Draghyper" -ErrorAction SilentlyContinue
-
           if ($null -eq $user) {
-            New-LocalUser -Name "Draghyper" `
-              -Password $securePassword `
-              -Description "RDP account" | Out-Null
+            New-LocalUser -Name "Draghyper" -Password $securePassword -Description "RDP account" | Out-Null
           } else {
             Set-LocalUser -Name "Draghyper" -Password $securePassword
           }
+          Add-LocalGroupMember -Group "Administrators" -Member "Draghyper" -ErrorAction SilentlyContinue
 
-          Add-LocalGroupMember -Group "Administrators" `
-            -Member "Draghyper" -ErrorAction SilentlyContinue
-
-          Set-ItemProperty `
-            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-            -Name fDenyTSConnections -Value 0
-
+          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
           $rdpPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
           Set-ItemProperty -Path $rdpPath -Name UserAuthentication -Value 1
           Set-ItemProperty -Path $rdpPath -Name SecurityLayer -Value 2
 
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" `
-            -ErrorAction SilentlyContinue
-
-          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" `
-              -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name "RDP-Tailscale" `
-              -DisplayName "RDP over Tailscale" `
-              -Direction Inbound -Protocol TCP -LocalPort 3389 `
-              -Action Allow | Out-Null
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -Name "RDP-Tailscale" -DisplayName "RDP over Tailscale" `
+              -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow | Out-Null
           }
 
           Set-Service -Name TermService -StartupType Automatic
           Restart-Service -Name TermService -Force
-
-          Write-Host "Windows RDP ayarları tamamlandı."
+          Write-Host "RDP ayarları tamam."
 
       - name: Enable RDP Audio and Microphone Redirection
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
           $policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
           New-Item -Path $policyPath -Force | Out-Null
+          New-ItemProperty -Path $policyPath -Name fDisableAudioCapture  -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $policyPath -Name fDisableAudioPlayback -PropertyType DWord -Value 0 -Force | Out-Null
 
-          # 0 = ses kaydı/mikrofon yönlendirmesi engellenmesin
-          New-ItemProperty -Path $policyPath `
-            -Name fDisableAudioCapture -PropertyType DWord `
-            -Value 0 -Force | Out-Null
-
-          # 0 = ses çalma yönlendirmesi engellenmesin
-          New-ItemProperty -Path $policyPath `
-            -Name fDisableAudioPlayback -PropertyType DWord `
-            -Value 0 -Force | Out-Null
-
-          # Ses hizmetlerini etkinleştir ve başlat
-          foreach ($serviceName in @("AudioEndpointBuilder", "Audiosrv")) {
-            $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-            if ($null -ne $service) {
+          foreach ($svc in @("AudioEndpointBuilder", "Audiosrv")) {
+            $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+            if ($null -ne $s) {
               try {
-                Set-Service -Name $serviceName -StartupType Automatic -ErrorAction Stop
-                Start-Service -Name $serviceName -ErrorAction Stop
-                Write-Host "$serviceName başlatıldı."
-              } catch {
-                Write-Warning "$serviceName başlatılamadı: $($_.Exception.Message)"
-              }
+                Set-Service -Name $svc -StartupType Automatic -ErrorAction Stop
+                Start-Service -Name $svc -ErrorAction Stop
+                Write-Host "$svc başlatıldı."
+              } catch { Write-Warning "$svc başlatılamadı: $($_.Exception.Message)" }
             }
           }
 
-          # NOT: gpupdate kaldırıldı (takılma yapıyordu).
-          # Kayıt defteri ilkeleri yazıldı, servis restart yeterli.
           Restart-Service -Name TermService -Force
           Start-Sleep -Seconds 2
-          Write-Host "Ses yönlendirme ilkeleri uygulandı."
+          Write-Host "Ses/mikrofon politikaları uygulandı."
 
-      - name: Install Virtual Audio Cable (Safe Mode)
+      - name: Install Virtual Audio Cable (RELIABLE + VERIFY)
         shell: pwsh
         run: |
-          # Bu adım hata verse veya takılsa bile iş akışı DEVAM EDER.
           $ErrorActionPreference = "Continue"
           $zipPath = "$env:TEMP\VBCable.zip"
           $extractPath = "$env:TEMP\VBCable"
 
+          function Test-VirtualAudioDevice {
+            $dev = Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue |
+                   Where-Object { $_.FriendlyName -like "*CABLE*" -or $_.FriendlyName -like "*VB-Audio*" }
+            return ($null -ne $dev -and @($dev).Count -gt 0)
+          }
+
           try {
             Write-Host "VB-Cable indiriliyor..."
-            # curl.exe daha hızlıdır, 90 saniye zaman aşımı var
-            curl.exe -sL --max-time 90 `
-              -o $zipPath `
-              "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip"
-
+            curl.exe -sL --max-time 90 -o $zipPath "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip"
             if (-not (Test-Path $zipPath)) { throw "İndirme başarısız." }
 
             Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 
-            Write-Host "Sanal ses sürücüsü kuruluyor..."
-            $proc = Start-Process -FilePath "$extractPath\VBCABLE_Setup_x64.exe" `
-              -ArgumentList "-i" -PassThru -NoNewWindow
+            $setup = Get-ChildItem -Path $extractPath -Filter "VBCABLE_Setup_x64.exe" -Recurse | Select-Object -First 1
+            if (-not $setup) { throw "Kurulum dosyası bulunamadı." }
 
-            # En fazla 120 saniye bekle, takılırsa öldür ve devam et
-            if (-not $proc.WaitForExit(120000)) {
-              $proc.Kill()
-              Write-Warning "VB-Cable kurulumu takıldı, işlem sonlandırıldı. Akış devam ediyor."
+            Write-Host "Sanal ses sürücüsü kuruluyor (deneme 1)..."
+            $p1 = Start-Process -FilePath $setup.FullName -ArgumentList "-i" -WorkingDirectory $extractPath -PassThru
+            if (-not $p1.WaitForExit(120000)) { $p1.Kill(); Write-Warning "Kurulum takıldı, sonlandırıldı." }
+
+            Start-Sleep -Seconds 3
+            Restart-Service -Name "Audiosrv","AudioEndpointBuilder" -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+
+            if (-not (Test-VirtualAudioDevice)) {
+              Write-Warning "Aygıt görünmedi, ikinci deneme yapılıyor..."
+              $p2 = Start-Process -FilePath $setup.FullName -ArgumentList "-i" -WorkingDirectory $extractPath -PassThru
+              if (-not $p2.WaitForExit(120000)) { $p2.Kill() }
+              Start-Sleep -Seconds 3
+              Restart-Service -Name "Audiosrv","AudioEndpointBuilder" -Force -ErrorAction SilentlyContinue
             }
 
-            Restart-Service -Name "Audiosrv", "AudioEndpointBuilder" -Force -ErrorAction SilentlyContinue
-            Write-Host "Sanal ses kartı kurulumu tamamlandı."
+            Write-Host ""
+            Write-Host "=== MEVCUT SES AYGITLARI ==="
+            Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue |
+              Select-Object Status, FriendlyName | Format-Table -AutoSize
+
+            if (Test-VirtualAudioDevice) {
+              Write-Host "SANAL SES KARTI BASARIYLA KURULDU." 
+            } else {
+              Write-Warning "SANAL SES KARTI GORUNMUYOR. Mikrofon icin istemci ayari ve alternatif gerekir."
+            }
           } catch {
-            Write-Warning "VB-Cable kurulamadı ama akış devam ediyor: $($_.Exception.Message)"
+            Write-Warning "VB-Cable hatası: $($_.Exception.Message)"
           }
 
       - name: Install Tailscale
@@ -158,27 +146,14 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $msi = Join-Path $env:TEMP "tailscale-setup.msi"
-
-          # curl.exe ile hızlı indirme
-          curl.exe -sL --max-time 180 `
-            -o $msi `
-            "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-
+          curl.exe -sL --max-time 180 -o $msi "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
           if (-not (Test-Path $msi)) { throw "Tailscale indirilemedi." }
 
-          $process = Start-Process msiexec.exe `
-            -ArgumentList "/i `"$msi`" /quiet /norestart" `
-            -Wait -PassThru
-
-          if ($process.ExitCode -notin @(0, 3010)) {
-            throw "Tailscale kurulumu başarısız. Kod: $($process.ExitCode)"
-          }
+          $process = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait -PassThru
+          if ($process.ExitCode -notin @(0, 3010)) { throw "Tailscale kurulum hatası: $($process.ExitCode)" }
 
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          if (-not (Test-Path $tailscale)) {
-            throw "Tailscale programı bulunamadı."
-          }
-
+          if (-not (Test-Path $tailscale)) { throw "Tailscale bulunamadı." }
           "TAILSCALE_EXE=$tailscale" | Out-File -FilePath $env:GITHUB_ENV -Append
           Write-Host "Tailscale kuruldu."
 
@@ -189,42 +164,28 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $hostname = "gh-runner-$env:GITHUB_RUN_ID"
-
-          & $env:TAILSCALE_EXE up `
-            --auth-key="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="$hostname"
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Tailscale girişi başarısız. Auth key ve cihaz politikasını kontrol et."
-          }
+          & $env:TAILSCALE_EXE up --auth-key="$env:TAILSCALE_AUTH_KEY" --hostname="$hostname"
+          if ($LASTEXITCODE -ne 0) { throw "Tailscale girişi başarısız." }
 
           Start-Sleep -Seconds 3
           $ip = (& $env:TAILSCALE_EXE ip -4 | Select-Object -First 1).Trim()
-
-          if ([string]::IsNullOrWhiteSpace($ip)) {
-            throw "Tailscale IPv4 adresi alınamadı."
-          }
-
+          if ([string]::IsNullOrWhiteSpace($ip)) { throw "Tailscale IP alınamadı." }
           "RDP_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
 
           Write-Host ""
           Write-Host "=============================================="
-          Write-Host "  BAGLANMAYA HAZIR! HEMEN RDP AC:"
+          Write-Host "  BAGLANMAYA HAZIR!"
           Write-Host "  IP    : $ip"
           Write-Host "  User  : Draghyper"
+          Write-Host "----------------------------------------------"
+          Write-Host "  MIKROFON ICIN RDP ISTEMCISINDE:"
+          Write-Host "  Yerel Kaynaklar > Ayarlar >"
+          Write-Host "  'Bu bilgisayardan kaydet' ISARETLI olmali"
           Write-Host "=============================================="
           Write-Host ""
 
       - name: Maintain Connection
         shell: pwsh
         run: |
-          Write-Host "RDP oturumu 6 saate kadar açık tutulacak."
-          Write-Host "Adres: $env:RDP_IP"
-          Write-Host "Kullanıcı adı: Draghyper"
-          Write-Host "Parola, GitHub RDP_PASSWORD secret değeridir."
-          Write-Host "ONEMLI: Bu adimin bitmesini BEKLEME, IP gorununce hemen baglan."
-
-          for ($i = 1; $i -le 360; $i++) {
-            Write-Host "Bağlantı aktif. Geçen süre: $i dakika"
-            Start-Sleep -Seconds 60
-          }
+          Write-Host "RDP 6 saat açık kalacak. IP: $env:RDP_IP | User: Draghyper"
+          Write-Host "Bu adımın bitmesini BEKLEME, IP görünü
