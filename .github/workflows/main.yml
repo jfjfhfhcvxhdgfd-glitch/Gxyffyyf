@@ -169,29 +169,46 @@ jobs:
           Write-Host "ngrok tüneli başlatılıyor..."
           Start-Process -FilePath $env:NGROK_EXE -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow -PassThru
 
-          Start-Sleep -Seconds 5
+          # ngrok'un başlaması için bekle
+          Start-Sleep -Seconds 8
 
-          Write-Host ""
-          Write-Host "=============================================="
-          Write-Host "  BAGLANMAYA HAZIR!"
-          Write-Host "  RDP ile baglanmak icin:"
-          Write-Host "  1. https://dashboard.ngrok.com/endpoints adresine git"
-          Write-Host "  2. 'tcp://0.tcp.ngrok.io:XXXXX' adresini kopyala"
-          Write-Host "  3. RDP istemcisinde bu adresi yaz"
-          Write-Host "  User: Draghyper"
-          Write-Host "----------------------------------------------"
-          Write-Host "  MIKROFON ICIN RDP ISTEMCISINDE:"
-          Write-Host "  Yerel Kaynaklar > Ayarlar >"
-          Write-Host "  'Bu bilgisayardan kaydet' ISARETLI olmali"
-          Write-Host "=============================================="
-          Write-Host ""
+          # ngrok API'den tünel bilgisini çek
+          Write-Host "IP adresi alınıyor..."
+          try {
+            $tunnels = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -Method Get -ErrorAction Stop
+            $publicUrl = $tunnels.tunnels[0].public_url
+            # tcp://0.tcp.ngrok.io:12345 formatından host ve port ayır
+            $clean = $publicUrl -replace '^tcp://', ''
+            $parts = $clean -split ':'
+            $host_ = $parts[0]
+            $port_ = $parts[1]
+
+            Write-Host ""
+            Write-Host "=============================================="
+            Write-Host "  BAGLANMAYA HAZIR! HEMEN RDP AC:"
+            Write-Host "  ADRES : $clean"
+            Write-Host "  HOST  : $host_"
+            Write-Host "  PORT  : $port_"
+            Write-Host "  User  : Draghyper"
+            Write-Host "  Pass  : GitHub RDP_PASSWORD secret'ı"
+            Write-Host "----------------------------------------------"
+            Write-Host "  MIKROFON ICIN RDP ISTEMCISINDE:"
+            Write-Host "  Yerel Kaynaklar > Ayarlar >"
+            Write-Host "  'Bu bilgisayardan kaydet' ISARETLI olmali"
+            Write-Host "=============================================="
+            Write-Host ""
+          } catch {
+            Write-Warning "IP alinamadi: $($_.Exception.Message)"
+            Write-Host "Alternatif: https://dashboard.ngrok.com/endpoints adresine git."
+          }
 
       - name: Maintain Connection
         shell: pwsh
         run: |
           Write-Host "RDP 6 saat açık kalacak."
           Write-Host "User: Draghyper"
-          Write-Host "ngrok panelinden adresini al ve RDP ile bağlan."
+          Write-Host "Pass: GitHub RDP_PASSWORD secret'ı"
+          Write-Host "Bu adımın bitmesini BEKLEME, IP görününce hemen bağlan."
           for ($i = 1; $i -le 360; $i++) {
             Start-Sleep -Seconds 60
           }
