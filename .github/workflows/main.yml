@@ -1,4 +1,4 @@
-name: RDP
+name: RDP-ngrok
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
             throw "RDP_PASSWORD secret eksik."
@@ -28,8 +28,8 @@ jobs:
               $env:RDP_PASSWORD -notmatch '[^a-zA-Z0-9]') {
             throw "RDP_PASSWORD en az 12 karakter; büyük harf, küçük harf, rakam ve sembol içermeli."
           }
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            throw "TAILSCALE_AUTH_KEY secret eksik."
+          if ([string]::IsNullOrWhiteSpace($env:NGROK_AUTH_TOKEN)) {
+            throw "NGROK_AUTH_TOKEN secret eksik."
           }
           Write-Host "Secret kontrolleri tamam."
 
@@ -55,11 +55,6 @@ jobs:
           Set-ItemProperty -Path $rdpPath -Name SecurityLayer -Value 2
 
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name "RDP-Tailscale" -DisplayName "RDP over Tailscale" `
-              -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow | Out-Null
-          }
-
           Set-Service -Name TermService -StartupType Automatic
           Restart-Service -Name TermService -Force
           Write-Host "RDP ayarları tamam."
@@ -141,83 +136,62 @@ jobs:
             Write-Warning "VB-Cable hatası: $($_.Exception.Message)"
           }
 
-      - name: Install Tailscale
+      - name: Install ngrok
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $msi = Join-Path $env:TEMP "tailscale-setup.msi"
-          curl.exe -sL --max-time 180 -o $msi "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
-          if (-not (Test-Path $msi)) { throw "Tailscale indirilemedi." }
+          $zipPath = "$env:TEMP\ngrok.zip"
+          $extractPath = "$env:TEMP\ngrok"
 
-          $process = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait -PassThru
-          if ($process.ExitCode -notin @(0, 3010)) { throw "Tailscale kurulum hatası: $($process.ExitCode)" }
+          Write-Host "ngrok indiriliyor..."
+          curl.exe -sL --max-time 120 -o $zipPath "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+          if (-not (Test-Path $zipPath)) { throw "ngrok indirilemedi." }
 
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          if (-not (Test-Path $tailscale)) { throw "Tailscale bulunamadı." }
-          "TAILSCALE_EXE=$tailscale" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Tailscale kuruldu."
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 
-      - name: Connect Tailscale (DIAGNOSTIC)
+          $ngrok = "$extractPath\ngrok.exe"
+          if (-not (Test-Path $ngrok)) { throw "ngrok bulunamadı." }
+
+          "NGROK_EXE=$ngrok" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "ngrok kuruldu."
+
+      - name: Connect ngrok
         shell: pwsh
         env:
-          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          NGROK_AUTH_TOKEN: ${{ secrets.NGROK_AUTH_TOKEN }}
         run: |
-          $ErrorActionPreference = "Continue"
+          $ErrorActionPreference = "Stop"
 
-          $authKey = "$env:TAILSCALE_AUTH_KEY".Trim()
-          Write-Host "=== TEŞHİS ==="
-          Write-Host "Auth key uzunluğu: $($authKey.Length)"
-          if ($authKey.Length -ge 12) {
-            Write-Host "Auth key başı: $($authKey.Substring(0,12))..."
-          } else {
-            throw "Auth key çok kısa veya boş. Secret'ı kontrol et."
-          }
-          if ($authKey -notmatch '^tskey-auth-') {
-            Write-Warning "UYARI: Key 'tskey-auth-' ile başlamıyor. Yanlış anahtar olabilir."
-          }
-          if ($authKey -match '\s') {
-            throw "Auth key içinde boşluk/yeni satır var. Secret'a yeniden yapıştır."
-          }
+          Write-Host "ngrok authtoken ayarlanıyor..."
+          & $env:NGROK_EXE config add-authtoken $env:NGROK_AUTH_TOKEN
+          if ($LASTEXITCODE -ne 0) { throw "ngrok authtoken hatası." }
 
-          & $env:TAILSCALE_EXE version
-          Write-Host ""
+          Write-Host "ngrok tüneli başlatılıyor..."
+          Start-Process -FilePath $env:NGROK_EXE -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow -PassThru
 
-          $hostname = "gh-runner-$env:GITHUB_RUN_ID"
-          Write-Host "Bağlanıyor: $hostname"
-          $output = & $env:TAILSCALE_EXE up --auth-key="$authKey" --hostname="$hostname" 2>&1
-          $exitCode = $LASTEXITCODE
-
-          Write-Host ""
-          Write-Host "=== TAILSCALE ÇIKTISI ==="
-          Write-Host $output
-          Write-Host "Çıkış kodu: $exitCode"
-          Write-Host "========================="
-
-          if ($exitCode -ne 0) {
-            throw "Tailscale girişi başarısız (kod $exitCode). Yukarıdaki çıktıya bak."
-          }
-
-          Start-Sleep -Seconds 3
-          $ip = (& $env:TAILSCALE_EXE ip -4 | Select-Object -First 1).Trim()
-          if ([string]::IsNullOrWhiteSpace($ip)) { throw "Tailscale IP alınamadı." }
-          "RDP_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Start-Sleep -Seconds 5
 
           Write-Host ""
           Write-Host "=============================================="
           Write-Host "  BAGLANMAYA HAZIR!"
-          Write-Host "  IP    : $ip"
-          Write-Host "  User  : Draghyper"
+          Write-Host "  RDP ile baglanmak icin:"
+          Write-Host "  1. https://dashboard.ngrok.com/endpoints adresine git"
+          Write-Host "  2. 'tcp://0.tcp.ngrok.io:XXXXX' adresini kopyala"
+          Write-Host "  3. RDP istemcisinde bu adresi yaz"
+          Write-Host "  User: Draghyper"
           Write-Host "----------------------------------------------"
           Write-Host "  MIKROFON ICIN RDP ISTEMCISINDE:"
           Write-Host "  Yerel Kaynaklar > Ayarlar >"
           Write-Host "  'Bu bilgisayardan kaydet' ISARETLI olmali"
           Write-Host "=============================================="
+          Write-Host ""
 
       - name: Maintain Connection
         shell: pwsh
         run: |
-          Write-Host "RDP 6 saat açık kalacak. IP: $env:RDP_IP | User: Draghyper"
-          Write-Host "Bu adımın bitmesini BEKLEME, IP görününce hemen bağlan."
+          Write-Host "RDP 6 saat açık kalacak."
+          Write-Host "User: Draghyper"
+          Write-Host "ngrok panelinden adresini al ve RDP ile bağlan."
           for ($i = 1; $i -le 360; $i++) {
             Start-Sleep -Seconds 60
           }
