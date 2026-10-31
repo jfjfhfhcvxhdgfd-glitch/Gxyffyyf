@@ -1,6 +1,5 @@
 # ============================================
-# GEREKLİ SECRET AYARLARI
-# (GitHub → Settings → Secrets and variables → Actions)
+# GEREKLİ SECRET AYARLARI (GitHub Settings → Secrets and variables → Actions)
 # ============================================
 # Secret Adı          | Ne Yazacaksın
 # --------------------------------------------
@@ -114,17 +113,14 @@ jobs:
           $policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
           New-Item -Path $policyPath -Force | Out-Null
 
-          # 0 = ses kaydı/mikrofon yönlendirmesi engellenmesin
           New-ItemProperty -Path $policyPath `
             -Name fDisableAudioCapture -PropertyType DWord `
             -Value 0 -Force | Out-Null
 
-          # 0 = ses çalma yönlendirmesi engellenmesin
           New-ItemProperty -Path $policyPath `
             -Name fDisableAudioPlayback -PropertyType DWord `
             -Value 0 -Force | Out-Null
 
-          # Ses hizmetlerini etkinleştirmeyi ve başlatmayı dene
           foreach ($serviceName in @("AudioEndpointBuilder", "Audiosrv")) {
             $service = Get-Service -Name $serviceName `
               -ErrorAction SilentlyContinue
@@ -138,28 +134,13 @@ jobs:
               } catch {
                 Write-Warning "$serviceName başlatılamadı: $($_.Exception.Message)"
               }
-            } else {
-              Write-Warning "$serviceName bu Windows kurulumunda bulunamadı."
             }
           }
 
-          Write-Host "Mikrofon/ses yönlendirme ilkeleri:"
-          Get-ItemProperty -Path $policyPath |
-            Select-Object fDisableAudioCapture, fDisableAudioPlayback |
-            Format-List
-
-          Write-Host "Not: Mikrofonun görünmesi, RDP istemcisinin ve oturumun yönlendirmeyi desteklemesine de bağlıdır."
-
-          # Apply the computer policy before a new RDP session is created.
           gpupdate /target:computer /force
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "gpupdate başarısız oldu; kayıt defteri ilkeleri yine de yazıldı."
-          }
-
-          # Restart RDP after microphone redirection policy has been written.
           Restart-Service -Name TermService -Force
           Start-Sleep -Seconds 3
-          Write-Host "RDP servisi ses yönlendirme ilkelerinden sonra yeniden başlatıldı."
+          Write-Host "Ses ve mikrofon yönlendirme ilkeleri uygulandı."
 
       - name: Free Temporary Disk Space
         shell: pwsh
@@ -232,14 +213,13 @@ jobs:
         env:
           CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
         run: |
-          Write-Host "Rclone indiriliyor..."
+          Write-Host "Rclone indiriliyor ve TeraBox bağlanıyor..."
           curl.exe -sL -o "$env:TEMP\rclone.zip" "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
           Expand-Archive -Path "$env:TEMP\rclone.zip" -DestinationPath "$env:TEMP\rclone" -Force
           $rcloneDir = Get-ChildItem -Path "$env:TEMP\rclone" -Filter "rclone-*-windows-amd64" | Select-Object -First 1
           $rcloneExe = Join-Path $rcloneDir.FullName "rclone.exe"
           $env:PATH += ";$($rcloneDir.FullName)"
           
-          Write-Host "TeraBox bağlanıyor..."
           $env:RCLONE_CONFIG_MYCLOUD_TYPE = "terabox"
           $env:RCLONE_CONFIG_MYCLOUD_NDUS = $env:CLOUD_COOKIE
           
@@ -247,9 +227,8 @@ jobs:
           Start-Sleep -Seconds 15
           
           if (Test-Path "Z:\") {
-            Write-Host "TeraBox Z: sürücüsüne bağlandı!" -ForegroundColor Green
+            Write-Host "TeraBox Z: sürücüsüne başarıyla bağlandı!" -ForegroundColor Green
             
-            Write-Host "İndirmeler Z: sürücüsüne yönlendiriliyor..."
             New-Item -ItemType Directory -Force -Path "Z:\Downloads", "Z:\Temp" | Out-Null
             
             $dl = "C:\Users\Draghyper\Downloads"
@@ -260,7 +239,7 @@ jobs:
             if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
             cmd /c mklink /J $tmp "Z:\Temp"
             
-            Write-Host "Yönlendirme tamamlandı. C: diski dolmayacak." -ForegroundColor Green
+            Write-Host "İndirmeler ve Temp klasörü Z: diskine yönlendirildi." -ForegroundColor Green
           } else {
             Write-Host "UYARI: Z: sürücüsü bağlanamadı. CLOUD_COOKIE (ndus) değerini kontrol et." -ForegroundColor Red
           }
@@ -278,11 +257,6 @@ jobs:
           Write-Host "Mikrofon yönlendirmesi engellenmiyor: $($audio.fDisableAudioCapture -eq 0)"
           Write-Host "Ses çıkışı yönlendirmesi engellenmiyor: $($audio.fDisableAudioPlayback -eq 0)"
 
-          Get-NetTCPConnection -LocalPort 3389 -State Listen `
-            -ErrorAction SilentlyContinue |
-            Select-Object LocalAddress, LocalPort, State |
-            Format-Table
-
       - name: Maintain Connection
         shell: pwsh
         env:
@@ -292,7 +266,6 @@ jobs:
           Write-Host "Adres: $env:RDP_IP"
           Write-Host "Kullanıcı adı: Draghyper"
           Write-Host "Parola, GitHub RDP_PASSWORD secret değeridir."
-          Write-Host "Parola güvenlik nedeniyle günlükte gösterilmiyor."
 
           for ($i = 1; $i -le 360; $i++) {
             Write-Host "Bağlantı aktif. Geçen süre: $i dakika"
