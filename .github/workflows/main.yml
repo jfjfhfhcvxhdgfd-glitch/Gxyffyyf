@@ -1,13 +1,3 @@
-# ============================================
-# GEREKLI SECRET AYARLARI (GitHub Settings → Secrets and variables → Actions)
-# ============================================
-# Secret Adı          | Ne Yazacaksın
-# --------------------------------------------
-# RDP_PASSWORD        | Güçlü şifre (örn: Draghyper2026!)
-# TAILSCALE_AUTH_KEY  | Tailscale → Settings → Auth keys (API keys DEĞİL) → Generate → tskey-auth-k... ile başlayan
-# CLOUD_COOKIE        | TeraBox'a giriş yap → F12 → Application → Cookies → ndus satırının Value'sunu kopyala
-# ============================================
-
 name: RDP-TeraBox-Full-Nihai-Birlesim
 
 on:
