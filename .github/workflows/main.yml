@@ -194,56 +194,66 @@ jobs:
           Write-Host "RDP IP: $ip"
           Write-Host "Kullanici adi: Draghyper"
 
-      - name: Install Rclone and Mount TeraBox
+      - name: Install Rclone and Mount TeraBox (DEBUG)
         shell: pwsh
         env:
           CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
         run: |
           $ErrorActionPreference = "Stop"
-          
+
+          Write-Host "Rclone indiriliyor..."
           curl.exe -sL `
             -o "$env:TEMP\rclone.zip" `
             "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
-          
+
           Expand-Archive `
             -Path "$env:TEMP\rclone.zip" `
             -DestinationPath "$env:TEMP\rclone" -Force
-          
+
           $rcloneDir = Get-ChildItem `
             -Path "$env:TEMP\rclone" `
             -Filter "rclone-*-windows-amd64" | Select-Object -First 1
-          
+
           $rcloneExe = Join-Path $rcloneDir.FullName "rclone.exe"
           $env:PATH += ";$($rcloneDir.FullName)"
-          
+
           $env:RCLONE_CONFIG_MYCLOUD_TYPE = "terabox"
           $env:RCLONE_CONFIG_MYCLOUD_NDUS = $env:CLOUD_COOKIE
-          
+
+          Write-Host "Rclone baglanti testi yapiliyor..."
+          & $rcloneExe lsd mycloud: 2>&1
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "RCLONE HATASI: TeraBox'a baglanilamadi!" -ForegroundColor Red
+            throw "Rclone TeraBox'a baglanamadi. CLOUD_COOKIE hatali veya suresi dolmus."
+          }
+
+          Write-Host "Rclone baglandi, Z: surucusu olusturuluyor..."
           Start-Process `
             -FilePath $rcloneExe `
             -ArgumentList "mount mycloud: Z: --vfs-cache-mode writes --volname 'TeraBox 1TB'" `
             -NoNewWindow -PassThru
-          
+
           Start-Sleep -Seconds 15
-          
+
           if (Test-Path "Z:\") {
             Write-Host "TeraBox Z: surucusune baglandi."
-            
+
             New-Item -ItemType Directory -Force -Path "Z:\Downloads" | Out-Null
             New-Item -ItemType Directory -Force -Path "Z:\Temp" | Out-Null
-            
+
             $dl = "C:\Users\Draghyper\Downloads"
             if (Test-Path $dl) {
               Remove-Item $dl -Recurse -Force -ErrorAction SilentlyContinue
             }
             cmd /c mklink /J $dl "Z:\Downloads"
-            
+
             $tmp = $env:TEMP
             if (Test-Path $tmp) {
               Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
             }
             cmd /c mklink /J $tmp "Z:\Temp"
-            
+
             Write-Host "Indirmeler Z: surucusune yonlendirildi."
           } else {
             Write-Host "UYARI: Z: surucusu baglanamadi. CLOUD_COOKIE degerini kontrol et."
