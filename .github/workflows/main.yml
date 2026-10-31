@@ -1,13 +1,3 @@
-# ============================================
-# GEREKLİ SECRET AYARLARI (GitHub Settings → Secrets and variables → Actions)
-# ============================================
-# Secret Adı          | Ne Yazacaksın
-# --------------------------------------------
-# RDP_PASSWORD        | Güçlü şifre (örn: Draghyper2026!)
-# TAILSCALE_AUTH_KEY  | Tailscale → Settings → Auth keys (API keys DEĞİL) → Generate → tskey-auth-k... ile başlayan
-# CLOUD_COOKIE        | TeraBox'a giriş yap → F12 → Application → Cookies → ndus satırının Value'sunu kopyala
-# ============================================
-
 name: RDP
 
 on:
@@ -20,7 +10,6 @@ jobs:
   secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 360
-
     steps:
       - name: 1. Validate Secrets
         shell: pwsh
@@ -32,26 +21,20 @@ jobs:
           $hatalar = @()
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { $hatalar += "RDP_PASSWORD eksik." }
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { $hatalar += "TAILSCALE_AUTH_KEY eksik." }
-          elseif ($env:TAILSCALE_AUTH_KEY -notmatch '^tskey-auth-') { $hatalar += "TAILSCALE_AUTH_KEY yanlis format! tskey-auth- ile baslamali." }
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_COOKIE)) { $hatalar += "CLOUD_COOKIE eksik! (TeraBox ndus cerezi)" }
-          if ($hatalar.Count -gt 0) {
-            $hatalar | ForEach-Object { Write-Host $_ -ForegroundColor Red }
-            throw "Secret kontrolu basarisiz. GitHub Settings > Secrets kismindan eksikleri ekle."
-          }
-          Write-Host "Gerekli secret kontrolleri tamamlandi." -ForegroundColor Green
+          elseif ($env:TAILSCALE_AUTH_KEY -notmatch '^tskey-auth-') { $hatalar += "TAILSCALE_AUTH_KEY yanlis format." }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_COOKIE)) { $hatalar += "CLOUD_COOKIE eksik." }
+          if ($hatalar.Count -gt 0) { $hatalar | ForEach-Object { Write-Host $_ -ForegroundColor Red }; throw "Secret eksik!" }
+          Write-Host "Secret kontrolleri tamamlandi." -ForegroundColor Green
 
-      - name: 2. Configure Windows RDP and User
+      - name: 2. Configure RDP and User
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
           $user = Get-LocalUser -Name "Draghyper" -ErrorAction SilentlyContinue
-          if ($null -eq $user) {
-            New-LocalUser -Name "Draghyper" -Password $securePassword -Description "RDP account" | Out-Null
-          } else {
-            Set-LocalUser -Name "Draghyper" -Password $securePassword
-          }
+          if ($null -eq $user) { New-LocalUser -Name "Draghyper" -Password $securePassword -Description "RDP account" | Out-Null }
+          else { Set-LocalUser -Name "Draghyper" -Password $securePassword }
           Add-LocalGroupMember -Group "Administrators" -Member "Draghyper" -ErrorAction SilentlyContinue
           Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
           Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name UserAuthentication -Value 1
@@ -59,7 +42,7 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
           Set-Service -Name TermService -StartupType Automatic
           Restart-Service -Name TermService -Force
-          Write-Host "Windows RDP ayarlari tamamlandi."
+          Write-Host "RDP ayarlari tamamlandi."
 
       - name: 3. Enable Audio and Microphone
         shell: pwsh
@@ -70,9 +53,7 @@ jobs:
           New-ItemProperty -Path $policyPath -Name fDisableAudioPlayback -PropertyType DWord -Value 0 -Force | Out-Null
           foreach ($svc in @("AudioEndpointBuilder", "Audiosrv")) {
             $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
-            if ($null -ne $s) {
-              try { Set-Service -Name $svc -StartupType Automatic; Start-Service -Name $svc } catch {}
-            }
+            if ($null -ne $s) { try { Set-Service -Name $svc -StartupType Automatic; Start-Service -Name $svc } catch {} }
           }
           Restart-Service -Name TermService -Force
           Write-Host "Ses ve mikrofon ayarlari yapildi."
@@ -82,9 +63,7 @@ jobs:
         run: |
           $tempPaths = @($env:TEMP, "$env:WINDIR\Temp")
           foreach ($path in $tempPaths) {
-            if (Test-Path $path) {
-              Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-            }
+            if (Test-Path $path) { Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
           }
           Write-Host "Gecici dosyalar temizlendi."
 
@@ -141,6 +120,4 @@ jobs:
           Write-Host "RDP oturumu 6 saate kadar acik tutulacak."
           Write-Host "Adres: $env:RDP_IP"
           Write-Host "Kullanici adi: Draghyper"
-          for ($i = 1; $i -le 360; $i++) {
-            Start-Sleep -Seconds 60
-          }
+          for ($i = 1; $i -le 360; $i++) { Start-Sleep -Seconds 60 }
