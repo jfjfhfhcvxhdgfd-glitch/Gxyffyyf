@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Validate Secrets
+      - name: 1. Validate Secrets
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
@@ -30,244 +30,117 @@ jobs:
           CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
         run: |
           $hatalar = @()
-          
-          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-            $hatalar += "RDP_PASSWORD secret eksik."
-          } elseif ($env:RDP_PASSWORD.Length -lt 12 -or
-              $env:RDP_PASSWORD -notmatch '[A-Z]' -or
-              $env:RDP_PASSWORD -notmatch '[a-z]' -or
-              $env:RDP_PASSWORD -notmatch '\d' -or
-              $env:RDP_PASSWORD -notmatch '[^a-zA-Z0-9]') {
-            $hatalar += "RDP_PASSWORD en az 12 karakter; büyük harf, küçük harf, rakam ve sembol içermeli."
-          }
-          
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            $hatalar += "TAILSCALE_AUTH_KEY secret eksik."
-          } elseif ($env:TAILSCALE_AUTH_KEY -notmatch '^tskey-auth-') {
-            $hatalar += "TAILSCALE_AUTH_KEY YANLIŞ FORMAT! 'tskey-auth-' ile başlamalı (API key değil, Auth key)."
-          }
-          
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_COOKIE)) {
-            $hatalar += "CLOUD_COOKIE eksik! (TeraBox ndus çerezi)"
-          }
-
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { $hatalar += "RDP_PASSWORD eksik." }
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { $hatalar += "TAILSCALE_AUTH_KEY eksik." }
+          elseif ($env:TAILSCALE_AUTH_KEY -notmatch '^tskey-auth-') { $hatalar += "TAILSCALE_AUTH_KEY yanlis format! tskey-auth- ile baslamali." }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_COOKIE)) { $hatalar += "CLOUD_COOKIE eksik! (TeraBox ndus cerezi)" }
           if ($hatalar.Count -gt 0) {
-            Write-Host "HATALAR:" -ForegroundColor Red
-            $hatalar | ForEach-Object { Write-Host "- $_" -ForegroundColor Red }
-            throw "Secret kontrolü başarısız. GitHub Settings > Secrets kısmından eksikleri ekle."
+            $hatalar | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            throw "Secret kontrolu basarisiz. GitHub Settings > Secrets kismindan eksikleri ekle."
           }
-          Write-Host "Gerekli secret kontrolleri tamamlandı." -ForegroundColor Green
+          Write-Host "Gerekli secret kontrolleri tamamlandi." -ForegroundColor Green
 
-      - name: Configure Windows RDP
+      - name: 2. Configure Windows RDP and User
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          $ErrorActionPreference = "Stop"
-
-          $securePassword = ConvertTo-SecureString `
-            $env:RDP_PASSWORD -AsPlainText -Force
-
+          $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
           $user = Get-LocalUser -Name "Draghyper" -ErrorAction SilentlyContinue
-
           if ($null -eq $user) {
-            New-LocalUser -Name "Draghyper" `
-              -Password $securePassword `
-              -Description "RDP account" | Out-Null
+            New-LocalUser -Name "Draghyper" -Password $securePassword -Description "RDP account" | Out-Null
           } else {
             Set-LocalUser -Name "Draghyper" -Password $securePassword
           }
-
-          Add-LocalGroupMember -Group "Administrators" `
-            -Member "Draghyper" -ErrorAction SilentlyContinue
-
-          Set-ItemProperty `
-            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-            -Name fDenyTSConnections -Value 0
-
-          $rdpPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-          Set-ItemProperty -Path $rdpPath -Name UserAuthentication -Value 1
-          Set-ItemProperty -Path $rdpPath -Name SecurityLayer -Value 2
-
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" `
-            -ErrorAction SilentlyContinue
-
-          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" `
-              -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name "RDP-Tailscale" `
-              -DisplayName "RDP over Tailscale" `
-              -Direction Inbound -Protocol TCP -LocalPort 3389 `
-              -Action Allow | Out-Null
-          }
-
+          Add-LocalGroupMember -Group "Administrators" -Member "Draghyper" -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name UserAuthentication -Value 1
+          Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name SecurityLayer -Value 2
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
           Set-Service -Name TermService -StartupType Automatic
           Restart-Service -Name TermService -Force
+          Write-Host "Windows RDP ayarlari tamamlandi."
 
-          Write-Host "Windows RDP ayarları tamamlandı."
-
-      - name: Enable RDP Audio and Microphone Redirection
+      - name: 3. Enable Audio and Microphone
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-
           $policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
           New-Item -Path $policyPath -Force | Out-Null
-
-          New-ItemProperty -Path $policyPath `
-            -Name fDisableAudioCapture -PropertyType DWord `
-            -Value 0 -Force | Out-Null
-
-          New-ItemProperty -Path $policyPath `
-            -Name fDisableAudioPlayback -PropertyType DWord `
-            -Value 0 -Force | Out-Null
-
-          foreach ($serviceName in @("AudioEndpointBuilder", "Audiosrv")) {
-            $service = Get-Service -Name $serviceName `
-              -ErrorAction SilentlyContinue
-
-            if ($null -ne $service) {
-              try {
-                Set-Service -Name $serviceName -StartupType Automatic `
-                  -ErrorAction Stop
-                Start-Service -Name $serviceName -ErrorAction Stop
-                Write-Host "$serviceName başlatıldı."
-              } catch {
-                Write-Warning "$serviceName başlatılamadı: $($_.Exception.Message)"
-              }
+          New-ItemProperty -Path $policyPath -Name fDisableAudioCapture -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $policyPath -Name fDisableAudioPlayback -PropertyType DWord -Value 0 -Force | Out-Null
+          foreach ($svc in @("AudioEndpointBuilder", "Audiosrv")) {
+            $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
+            if ($null -ne $s) {
+              try { Set-Service -Name $svc -StartupType Automatic; Start-Service -Name $svc } catch {}
             }
           }
-
-          gpupdate /target:computer /force
           Restart-Service -Name TermService -Force
-          Start-Sleep -Seconds 3
-          Write-Host "Ses ve mikrofon yönlendirme ilkeleri uygulandı."
+          Write-Host "Ses ve mikrofon ayarlari yapildi."
 
-      - name: Free Temporary Disk Space
+      - name: 4. Free Disk Space
         shell: pwsh
         run: |
-          Write-Host "Disk temizleniyor..."
           $tempPaths = @($env:TEMP, "$env:WINDIR\Temp")
           foreach ($path in $tempPaths) {
             if (Test-Path $path) {
-              Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue | `
-                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+              Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
-          Write-Host "Geçici dosyalar temizlendi, disk alanı açıldı." -ForegroundColor Green
+          Write-Host "Gecici dosyalar temizlendi."
 
-      - name: Install Tailscale
+      - name: 5. Install Tailscale
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
           $msi = Join-Path $env:TEMP "tailscale-setup.msi"
-          Invoke-WebRequest `
-            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
-            -OutFile $msi
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msi
+          Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait
+          "TAILSCALE_EXE=$env:ProgramFiles\Tailscale\tailscale.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-          $process = Start-Process msiexec.exe `
-            -ArgumentList "/i `"$msi`" /quiet /norestart" `
-            -Wait -PassThru
-
-          if ($process.ExitCode -notin @(0, 3010)) {
-            throw "Tailscale kurulumu başarısız. Kod: $($process.ExitCode)"
-          }
-
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          if (-not (Test-Path $tailscale)) {
-            throw "Tailscale programı bulunamadı."
-          }
-
-          "TAILSCALE_EXE=$tailscale" |
-            Out-File -FilePath $env:GITHUB_ENV -Append
-
-      - name: Connect Tailscale
+      - name: 6. Connect Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          $ErrorActionPreference = "Stop"
           $hostname = "gh-runner-$env:GITHUB_RUN_ID"
-
-          & $env:TAILSCALE_EXE up `
-            --auth-key="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="$hostname"
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Tailscale girişi başarısız. Auth key ve cihaz politikasını kontrol et."
-          }
-
+          & $env:TAILSCALE_EXE up --auth-key="$env:TAILSCALE_AUTH_KEY" --hostname="$hostname"
           Start-Sleep -Seconds 5
           $ip = (& $env:TAILSCALE_EXE ip -4 | Select-Object -First 1).Trim()
-
-          if ([string]::IsNullOrWhiteSpace($ip)) {
-            throw "Tailscale IPv4 adresi alınamadı."
-          }
-
           "RDP_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Tailscale bağlantısı hazır."
-          Write-Host "RDP IP: $ip"
-          Write-Host "Kullanıcı adı: Draghyper"
+          Write-Host "Tailscale baglandi. IP: $ip"
 
-      - name: Install Rclone and Mount TeraBox as Z: Drive
+      - name: 7. Mount TeraBox as Z: Drive
         shell: pwsh
         env:
           CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
         run: |
-          Write-Host "Rclone indiriliyor ve TeraBox bağlanıyor..."
           curl.exe -sL -o "$env:TEMP\rclone.zip" "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
           Expand-Archive -Path "$env:TEMP\rclone.zip" -DestinationPath "$env:TEMP\rclone" -Force
           $rcloneDir = Get-ChildItem -Path "$env:TEMP\rclone" -Filter "rclone-*-windows-amd64" | Select-Object -First 1
           $rcloneExe = Join-Path $rcloneDir.FullName "rclone.exe"
-          $env:PATH += ";$($rcloneDir.FullName)"
-          
           $env:RCLONE_CONFIG_MYCLOUD_TYPE = "terabox"
           $env:RCLONE_CONFIG_MYCLOUD_NDUS = $env:CLOUD_COOKIE
-          
           Start-Process -FilePath $rcloneExe -ArgumentList "mount mycloud: Z: --vfs-cache-mode writes --volname 'TeraBox 1TB'" -NoNewWindow -PassThru
           Start-Sleep -Seconds 15
-          
           if (Test-Path "Z:\") {
-            Write-Host "TeraBox Z: sürücüsüne başarıyla bağlandı!" -ForegroundColor Green
-            
+            Write-Host "TeraBox Z: surucusune baglandi!" -ForegroundColor Green
             New-Item -ItemType Directory -Force -Path "Z:\Downloads", "Z:\Temp" | Out-Null
-            
             $dl = "C:\Users\Draghyper\Downloads"
             if (Test-Path $dl) { Remove-Item $dl -Recurse -Force -ErrorAction SilentlyContinue }
             cmd /c mklink /J $dl "Z:\Downloads"
-            
             $tmp = $env:TEMP
             if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
             cmd /c mklink /J $tmp "Z:\Temp"
-            
-            Write-Host "İndirmeler ve Temp klasörü Z: diskine yönlendirildi." -ForegroundColor Green
+            Write-Host "Indirmeler Z: diskine yonlendirildi." -ForegroundColor Green
           } else {
-            Write-Host "UYARI: Z: sürücüsü bağlanamadı. CLOUD_COOKIE (ndus) değerini kontrol et." -ForegroundColor Red
+            Write-Host "UYARI: Z: surucusu baglanamadi. CLOUD_COOKIE degerini kontrol et." -ForegroundColor Red
           }
 
-      - name: Verify RDP and Audio Policies
+      - name: 8. Maintain Connection
         shell: pwsh
         run: |
-          $rdp = Get-ItemProperty `
-            "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
-          Write-Host "RDP etkin: $($rdp.fDenyTSConnections -eq 0)"
-
-          $policy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          $audio = Get-ItemProperty -Path $policy
-
-          Write-Host "Mikrofon yönlendirmesi engellenmiyor: $($audio.fDisableAudioCapture -eq 0)"
-          Write-Host "Ses çıkışı yönlendirmesi engellenmiyor: $($audio.fDisableAudioPlayback -eq 0)"
-
-      - name: Maintain Connection
-        shell: pwsh
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-        run: |
-          Write-Host "RDP oturumu 6 saate kadar açık tutulacak."
+          Write-Host "RDP oturumu 6 saate kadar acik tutulacak."
           Write-Host "Adres: $env:RDP_IP"
-          Write-Host "Kullanıcı adı: Draghyper"
-          Write-Host "Parola, GitHub RDP_PASSWORD secret değeridir."
-
+          Write-Host "Kullanici adi: Draghyper"
           for ($i = 1; $i -le 360; $i++) {
-            Write-Host "Bağlantı aktif. Geçen süre: $i dakika"
             Start-Sleep -Seconds 60
           }
