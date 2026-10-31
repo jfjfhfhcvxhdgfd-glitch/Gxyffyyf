@@ -1,4 +1,15 @@
-name: RDP-TeraBox-Full-Nihai-Birlesim
+# ============================================
+# GEREKLI SECRET AYARLARI
+# (GitHub → Settings → Secrets and variables → Actions)
+# ============================================
+# Secret Adı          | Ne Yazacaksın
+# --------------------------------------------
+# RDP_PASSWORD        | Güçlü şifre (örn: Draghyper2026!)
+# TAILSCALE_AUTH_KEY  | Tailscale → Settings → Auth keys (API keys DEĞİL) → Generate → tskey-auth-k... ile başlayan
+# CLOUD_COOKIE        | TeraBox'a giriş yap → F12 → Application → Cookies → ndus satırının Value'sunu kopyala
+# ============================================
+
+name: RDP-TeraBox-Ultimate-Full
 
 on:
   workflow_dispatch:
@@ -12,379 +23,161 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 1. Secret Anahtarlarını Detaylı Kontrol Et
+      - name: 1. Secret Anahtarlarını Kontrol Et
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
           CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
         run: |
-          Write-Host "============================================" -ForegroundColor Cyan
-          Write-Host "  SECRET ANAHTAR KONTROLU BASLADI" -ForegroundColor Cyan
-          Write-Host "============================================" -ForegroundColor Cyan
+          Write-Host "=== SECRET KONTROL BASLADI ==="
           
           $hatalar = @()
           
-          # RDP_PASSWORD Kontrolü
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { 
-            $hatalar += " RDP_PASSWORD eksik veya boş!"
+            $hatalar += "RDP_PASSWORD eksik!"
           } else {
-            Write-Host "✅ RDP_PASSWORD bulundu (Uzunluk: $($env:RDP_PASSWORD.Length) karakter)"
-            if ($env:RDP_PASSWORD.Length -lt 12) {
-              $hatalar += "️ RDP_PASSWORD çok kısa! En az 12 karakter olmalı."
-            }
-            if ($env:RDP_PASSWORD -notmatch '[A-Z]') {
-              $hatalar += "⚠️ RDP_PASSWORD en az bir BÜYÜK HARF içermeli."
-            }
-            if ($env:RDP_PASSWORD -notmatch '[a-z]') {
-              $hatalar += "⚠️ RDP_PASSWORD en az bir küçük harf içermeli."
-            }
-            if ($env:RDP_PASSWORD -notmatch '\d') {
-              $hatalar += "⚠️ RDP_PASSWORD en az bir rakam içermeli."
-            }
+            Write-Host "[OK] RDP_PASSWORD bulundu."
           }
-          
-          # TAILSCALE_AUTH_KEY Kontrolü
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { 
-            $hatalar += "❌ TAILSCALE_AUTH_KEY eksik veya boş!"
-          } else {
-            Write-Host "✅ TAILSCALE_AUTH_KEY bulundu"
-            if ($env:TAILSCALE_AUTH_KEY -notmatch '^tskey-auth-') {
-              $hatalar += "❌ TAILSCALE_AUTH_KEY YANLIŞ FORMAT! 'tskey-auth-' ile başlamalı."
-              $hatalar += "   → API keys değil, AUTH keys kullanmalısın!"
-              $hatalar += "   → https://login.tailscale.com/admin/settings/keys adresinden al"
-            } else {
-              Write-Host "✅ Auth key formatı doğru (tskey-auth- ile başlıyor)"
-            }
-          }
-          
-          # CLOUD_COOKIE Kontrolü
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_COOKIE)) { 
-            $hatalar += "❌ CLOUD_COOKIE eksik veya boş!"
-            $hatalar += "   → TeraBox'a giriş yap"
-            $hatalar += "   → F12 → Application → Cookies → ndus → Value kopyala"
-          } else {
-            Write-Host "✅ CLOUD_COOKIE bulundu (Uzunluk: $($env:CLOUD_COOKIE.Length) karakter)"
-          }
-          
-          if ($hatalar.Count -gt 0) {
-            Write-Host ""
-            Write-Host "============================================" -ForegroundColor Red
-            Write-Host "  HATALAR BULUNDU!" -ForegroundColor Red
-            Write-Host "============================================" -ForegroundColor Red
-            $hatalar | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
-            Write-Host ""
-            Write-Host "ÇÖZÜM: GitHub → Settings → Secrets and variables → Actions" -ForegroundColor Green
-            Write-Host "         Eksik secret'ları yukarıdaki talimatlara göre ekle" -ForegroundColor Green
-            throw "Secret kontrolü başarısız. Yukarıdaki hataları düzelt."
-          }
-          
-          Write-Host ""
-          Write-Host "============================================" -ForegroundColor Green
-          Write-Host "  ✅ TÜM SECRET'LAR HAZIR VE GEÇERLİ!" -ForegroundColor Green
-          Write-Host "============================================" -ForegroundColor Green
 
-      - name: 2. Draghyper Kullanıcısı Oluştur ve RDP Ayarla
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { 
+            $hatalar += "TAILSCALE_AUTH_KEY eksik!"
+          } elseif ($env:TAILSCALE_AUTH_KEY -notmatch '^tskey-auth-') {
+            $hatalar += "TAILSCALE_AUTH_KEY yanlis format! tskey-auth- ile baslamali."
+          } else {
+            Write-Host "[OK] TAILSCALE_AUTH_KEY bulundu."
+          }
+
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_COOKIE)) { 
+            $hatalar += "CLOUD_COOKIE eksik!"
+          } else {
+            Write-Host "[OK] CLOUD_COOKIE bulundu."
+          }
+
+          if ($hatalar.Count -gt 0) {
+            Write-Host "HATALAR:" -ForegroundColor Red
+            $hatalar | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            throw "Secret eksik! GitHub Settings > Secrets kismindan ekle."
+          }
+          
+          Write-Host "Tum secret'lar hazir!" -ForegroundColor Green
+
+      - name: 2. Disk Temizleme ve RDP Aktiflestirme
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          Write-Host "============================================" -ForegroundColor Cyan
-          Write-Host "  RDP YAPILANDIRMASI BASLADI" -ForegroundColor Cyan
-          Write-Host "============================================" -ForegroundColor Cyan
-          
-          $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
-          
-          # Kullanıcı kontrolü ve oluşturma
-          $user = Get-LocalUser -Name "Draghyper" -ErrorAction SilentlyContinue
-          if ($null -eq $user) {
-            Write-Host " Draghyper kullanıcısı oluşturuluyor..."
-            New-LocalUser -Name "Draghyper" -Password $securePassword -Description "RDP Remote Desktop User" -PasswordNeverExpires:$true | Out-Null
-            Write-Host "✅ Kullanıcı oluşturuldu."
-          } else {
-            Write-Host "👤 Draghyper kullanıcısı zaten var, şifre güncelleniyor..."
-            Set-LocalUser -Name "Draghyper" -Password $securePassword -PasswordNeverExpires:$true
-            Write-Host "✅ Şifre güncellendi."
-          }
-          
-          # Admin yetkisi ver
-          Write-Host " Admin yetkisi veriliyor..."
-          Add-LocalGroupMember -Group "Administrators" -Member "Draghyper" -ErrorAction SilentlyContinue
-          Write-Host "✅ Admin yetkisi verildi."
-          
-          # RDP'yi etkinleştir
-          Write-Host "️ RDP etkinleştiriliyor..."
-          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0
-          $rdpPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-          Set-ItemProperty -Path $rdpPath -Name UserAuthentication -Value 1
-          Set-ItemProperty -Path $rdpPath -Name SecurityLayer -Value 2
-          Write-Host "✅ RDP etkinleştirildi."
-          
-          # Firewall kuralları
-          Write-Host " Firewall kuralları düzenleniyor..."
+          Write-Host "=== DISK TEMIZLEME ==="
+          Get-ChildItem -Path $env:TEMP, "$env:WINDIR\Temp" -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "[OK] Gecici dosyalar temizlendi."
+
+          Write-Host "=== RDP AKTIFLESTIRME ==="
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1 -Force
+          New-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name fDisableAudioCapture -Value 0 -PropertyType DWord -Force | Out-Null
+          New-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -Name fDisableAudioPlayback -Value 0 -PropertyType DWord -Force | Out-Null
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name "RDP-Tailscale" -DisplayName "RDP over Tailscale" `
-              -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow | Out-Null
-            Write-Host "✅ Tailscale RDP kuralı eklendi."
-          }
-          
-          # Servisi yeniden başlat
-          Write-Host "🔄 Terminal Service yeniden başlatılıyor..."
-          Set-Service -Name TermService -StartupType Automatic
-          Restart-Service -Name TermService -Force
-          Write-Host "✅ Servis yeniden başlatıldı."
-          
-          Write-Host ""
-          Write-Host "============================================" -ForegroundColor Green
-          Write-Host "  ✅ RDP YAPILANDIRMASI TAMAMLANDI!" -ForegroundColor Green
-          Write-Host "============================================" -ForegroundColor Green
+          Write-Host "[OK] RDP aktiflestirildi ve ayarlandi."
 
-      - name: 3. Ses ve Mikrofon Yönlendirmesini Etkinleştir
+          Write-Host "=== KULLANICI OLUSTURMA ==="
+          $pass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          if (!(Get-LocalUser "Draghyper" -ErrorAction SilentlyContinue)) { 
+            New-LocalUser "Draghyper" -Password $pass -PasswordNeverExpires:$true | Out-Null 
+          } else { 
+            Set-LocalUser "Draghyper" -Password $pass 
+          }
+          Add-LocalGroupMember "Administrators" "Draghyper" -ErrorAction SilentlyContinue
+          Restart-Service TermService -Force
+          Write-Host "[OK] Draghyper kullanici hazir."
+
+      - name: 3. VB-Cable ve Rclone Kurulumu
         shell: pwsh
         run: |
-          Write-Host "============================================" -ForegroundColor Cyan
-          Write-Host "  SES VE MIKROFON AYARLARI" -ForegroundColor Cyan
-          Write-Host "============================================" -ForegroundColor Cyan
-          
-          $policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          New-Item -Path $policyPath -Force | Out-Null
-          
-          Write-Host " Mikrofon yönlendirmesi açılıyor..."
-          New-ItemProperty -Path $policyPath -Name fDisableAudioCapture -PropertyType DWord -Value 0 -Force | Out-Null
-          Write-Host "✅ Mikrofon yönlendirmesi açıldı."
-          
-          Write-Host "🔊 Ses çalma yönlendirmesi açılıyor..."
-          New-ItemProperty -Path $policyPath -Name fDisableAudioPlayback -PropertyType DWord -Value 0 -Force | Out-Null
-          Write-Host "✅ Ses çalma yönlendirmesi açıldı."
-          
-          # Ses servislerini başlat
-          foreach ($svc in @("AudioEndpointBuilder", "Audiosrv")) {
-            $s = Get-Service -Name $svc -ErrorAction SilentlyContinue
-            if ($null -ne $s) {
-              try {
-                Set-Service -Name $svc -StartupType Automatic -ErrorAction Stop
-                Start-Service -Name $svc -ErrorAction Stop
-                Write-Host "✅ $svc servisi başlatıldı."
-              } catch {
-                Write-Warning "⚠️ $svc başlatılamadı: $($_.Exception.Message)"
-              }
-            }
+          Write-Host "=== VB-CABLE KURULUMU ==="
+          curl.exe -sL -o "$env:TEMP\vb.zip" "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip"
+          Expand-Archive "$env:TEMP\vb.zip" "$env:TEMP\vb" -Force
+          $vb = Get-ChildItem "$env:TEMP\vb" -Filter "VBCABLE_Setup_x64.exe" -Recurse | Select-Object -First 1
+          if ($vb) { 
+            Start-Process $vb.FullName -ArgumentList "-i" -Wait 
+            Write-Host "[OK] VB-Cable kuruldu."
+          } else {
+            Write-Host "VB-Cable kurulamadi, atlanıyor."
           }
-          
-          Restart-Service -Name TermService -Force
-          Start-Sleep -Seconds 2
-          
-          Write-Host ""
-          Write-Host "============================================" -ForegroundColor Green
-          Write-Host "  ✅ SES/MIKROFON AYARLARI TAMAMLANDI!" -ForegroundColor Green
-          Write-Host "============================================" -ForegroundColor Green
 
-      - name: 4. VB-Cable Sanal Ses Kartı Kur (Güvenli Mod)
-        shell: pwsh
-        run: |
-          Write-Host "============================================" -ForegroundColor Cyan
-          Write-Host "  VB-CABLE SANAL SES KARTI KURULUMU" -ForegroundColor Cyan
-          Write-Host "============================================" -ForegroundColor Cyan
-          
-          $ErrorActionPreference = "Continue"
-          $zipPath = "$env:TEMP\VBCable.zip"
-          $extractPath = "$env:TEMP\VBCable"
-          
-          function Test-VirtualAudioDevice {
-            $dev = Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue |
-                   Where-Object { $_.FriendlyName -like "*CABLE*" -or $_.FriendlyName -like "*VB-Audio*" }
-            return ($null -ne $dev -and @($dev).Count -gt 0)
-          }
-          
-          try {
-            Write-Host "📥 VB-Cable indiriliyor..."
-            curl.exe -sL --max-time 90 -o $zipPath "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip"
-            if (-not (Test-Path $zipPath)) {
-              Write-Warning "⚠️ VB-Cable indirilemedi, atlanıyor."
-              return
-            }
-            Write-Host "✅ İndirme tamamlandı."
-            
-            Write-Host " Dosya çıkarılıyor..."
-            Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
-            $setup = Get-ChildItem -Path $extractPath -Filter "VBCABLE_Setup_x64.exe" -Recurse | Select-Object -First 1
-            if (-not $setup) {
-              Write-Warning "⚠️ Kurulum dosyası bulunamadı, atlanıyor."
-              return
-            }
-            Write-Host "✅ Dosyalar hazır."
-            
-            Write-Host "🔧 Sanal ses sürücüsü kuruluyor..."
-            $p1 = Start-Process -FilePath $setup.FullName -ArgumentList "-i" -WorkingDirectory $extractPath -PassThru
-            if (-not $p1.WaitForExit(120000)) {
-              $p1.Kill()
-              Write-Warning "⚠️ Kurulum zaman aşımına uğradı."
-            }
-            
-            Start-Sleep -Seconds 3
-            Restart-Service -Name "Audiosrv","AudioEndpointBuilder" -Force -ErrorAction SilentlyContinue
-            
-            # İkinci deneme
-            if (-not (Test-VirtualAudioDevice)) {
-              Write-Host "🔄 Aygıt görünmedi, ikinci deneme..."
-              $p2 = Start-Process -FilePath $setup.FullName -ArgumentList "-i" -WorkingDirectory $extractPath -PassThru
-              if (-not $p2.WaitForExit(120000)) { $p2.Kill() }
-              Start-Sleep -Seconds 3
-              Restart-Service -Name "Audiosrv","AudioEndpointBuilder" -Force -ErrorAction SilentlyContinue
-            }
-            
-            Write-Host "=== MEVCUT SES AYGITLARI ==="
-            Get-PnpDevice -Class AudioEndpoint -ErrorAction SilentlyContinue |
-              Select-Object Status, FriendlyName | Format-Table -AutoSize
-            
-            if (Test-VirtualAudioDevice) {
-              Write-Host "✅ SANAL SES KARTI BAŞARIYLA KURULDU!" -ForegroundColor Green
-            } else {
-              Write-Warning "⚠️ SANAL SES KARTI GÖRÜNMÜYOR (bu kritik değil, devam edilebilir)"
-            }
-          } catch {
-            Write-Warning "️ VB-Cable kurulum hatası: $($_.Exception.Message)"
-            Write-Host "İşleme devam ediliyor..."
-          }
-          
-          Write-Host ""
-          Write-Host "============================================" -ForegroundColor Yellow
-          Write-Host "  VB-CABLE KURULUMU TAMAMLANDI" -ForegroundColor Yellow
-          Write-Host "============================================" -ForegroundColor Yellow
-
-      - name: 5. Rclone İndir ve Kur
-        shell: pwsh
-        run: |
-          Write-Host "============================================" -ForegroundColor Cyan
-          Write-Host "  RCLONE KURULUMU" -ForegroundColor Cyan
-          Write-Host "============================================" -ForegroundColor Cyan
-          
-          $ErrorActionPreference = "Stop"
-          Write-Host " Rclone indiriliyor..."
-          curl.exe -sL --max-time 120 -o "$env:TEMP\rclone.zip" "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
-          if (-not (Test-Path "$env:TEMP\rclone.zip")) {
-            throw "❌ Rclone indirilemedi. İnternet bağlantısını kontrol et."
-          }
-          Write-Host "✅ İndirme tamamlandı."
-          
-          Write-Host "📦 Dosya çıkarılıyor..."
-          Expand-Archive -Path "$env:TEMP\rclone.zip" -DestinationPath "$env:TEMP\rclone" -Force
-          $rcloneDir = Get-ChildItem -Path "$env:TEMP\rclone" -Filter "rclone-*-windows-amd64" | Select-Object -First 1
-          $rcloneExe = Join-Path $rcloneDir.FullName "rclone.exe"
-          if (-not (Test-Path $rcloneExe)) {
-            throw "❌ Rclone executable bulunamadı."
-          }
-          Write-Host "✅ Rclone hazır: $rcloneExe"
-          
+          Write-Host "=== RCLONE KURULUMU ==="
+          curl.exe -sL -o "$env:TEMP\rclone.zip" "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
+          Expand-Archive "$env:TEMP\rclone.zip" "$env:TEMP\rclone" -Force
+          $rcloneDir = Get-ChildItem "$env:TEMP\rclone" -Filter "rclone-*-windows-amd64" | Select-Object -First 1
           $env:PATH += ";$($rcloneDir.FullName)"
-          "RCLONE_EXE=$rcloneExe" | Out-File -FilePath $env:GITHUB_ENV -Append
-          
-          Write-Host ""
-          Write-Host "============================================" -ForegroundColor Green
-          Write-Host "  ✅ RCLONE KURULUMU TAMAMLANDI!" -ForegroundColor Green
-          Write-Host "============================================" -ForegroundColor Green
+          "RCLONE_EXE=$($rcloneDir.FullName)\rclone.exe" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "[OK] Rclone kuruldu."
 
-      - name: 6. TeraBox'ı Z: Sürücüsü Olarak Bağla (Cookie ile)
+      - name: 4. TeraBox Z: Surucusu Baglama
         shell: pwsh
         env:
           CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
         run: |
-          Write-Host "============================================" -ForegroundColor Cyan
-          Write-Host "  TERABOX BAGLANTISI (Z: SURUCU)" -ForegroundColor Cyan
-          Write-Host "============================================" -ForegroundColor Cyan
-          
-          $ErrorActionPreference = "Continue"
-          Write-Host "🍪 TeraBox çerezi (ndus) yükleniyor..."
-          Write-Host "   Çerez uzunluğu: $($env:CLOUD_COOKIE.Length) karakter"
-          
-          # Rclone'ı TeraBox modunda yapılandır
+          Write-Host "=== TERABOX BAGLANTISI ==="
           $env:RCLONE_CONFIG_MYCLOUD_TYPE = "terabox"
           $env:RCLONE_CONFIG_MYCLOUD_NDUS = $env:CLOUD_COOKIE
           
-          Write-Host " Z: sürücüsüne bağlanılıyor..."
-          $mountProcess = Start-Process -FilePath $env:RCLONE_EXE -ArgumentList "mount mycloud: Z: --vfs-cache-mode writes --volname 'TeraBox 1TB'" -NoNewWindow -PassThru
-          
-          Write-Host " Bağlantı bekleniyor (15 saniye)..."
+          Start-Process $env:RCLONE_EXE -ArgumentList "mount mycloud: Z: --vfs-cache-mode writes --volname 'TeraBox 1TB'" -NoNewWindow -PassThru
           Start-Sleep -Seconds 15
           
-          if (Test-Path "Z:\") {
-            Write-Host ""
-            Write-Host "============================================" -ForegroundColor Green
-            Write-Host "  ✅ BASARILI! TeraBox Z: Sürücüsü olarak bağlandı!" -ForegroundColor Green
-            Write-Host "============================================" -ForegroundColor Green
-            
-            Write-Host "📂 Z: sürücüsü içeriği:"
-            try {
-              Get-ChildItem -Path "Z:\" -ErrorAction SilentlyContinue | Select-Object -First 5 | ForEach-Object {
-                Write-Host "  - $($_.Name)"
-              }
-            } catch {
-              Write-Host "  (Dizin boş veya okunamadı)"
-            }
-          } else {
-            Write-Host ""
-            Write-Host "============================================" -ForegroundColor Red
-            Write-Host "  ❌ Z: SÜRÜCÜSÜ BAĞLANAMADI!" -ForegroundColor Red
-            Write-Host "============================================" -ForegroundColor Red
-            Write-Host ""
-            Write-Host "🔍 Olası Sebepler:" -ForegroundColor Yellow
-            Write-Host "  1. CLOUD_COOKIE (ndus) süresi dolmuş olabilir"
-            Write-Host "  2. TeraBox hesabına giriş yapman gerekiyor"
-            Write-Host "  3. Çerez yanlış kopyalanmış olabilir"
-            Write-Host ""
-            Write-Host "🔧 Çözüm:" -ForegroundColor Yellow
-            Write-Host "  1. Sanal bilgisayara RDP ile bağlan"
-            Write-Host "  2. Tarayıcıda TeraBox'a giriş yap"
-            Write-Host "  3. F12 → Application → Cookies → ndus → Value kopyala"
-            Write-Host "  4. GitHub Settings > Secrets > CLOUD_COOKIE güncelle"
-            Write-Host "  5. Workflow'u tekrar çalıştır"
-            Write-Host ""
-            Write-Warning "⚠️ Z: sürücüsü olmadan devam ediliyor (indirmeler C: diskine gidecek)"
+          if (Test-Path "Z:\") { 
+            Write-Host "[OK] TeraBox Z: surucusune baglandi!" -ForegroundColor Green 
+          } else { 
+            Write-Host "[HATA] Z: baglanamadi. CLOUD_COOKIE kontrol et." -ForegroundColor Red 
           }
 
-      - name: 7. İndirmeleri ve Geçici Dosyaları Z: Sürücüsüne Yönlendir
+      - name: 5. Indirmeleri Z: Surucusune Yonlendir
         shell: pwsh
         run: |
-          Write-Host "============================================" -ForegroundColor Cyan
-          Write-Host "  INDIRMELERI Z: SURUCUSUNE YONLENDIRME" -ForegroundColor Cyan
-          Write-Host "============================================" -ForegroundColor Cyan
-          
-          $ErrorActionPreference = "Stop"
-          
+          Write-Host "=== YONLENDIRME ==="
           if (Test-Path "Z:\") {
-            Write-Host " Klasörler oluşturuluyor..."
-            New-Item -ItemType Directory -Force -Path "Z:\Downloads" | Out-Null
-            New-Item -ItemType Directory -Force -Path "Z:\Temp" | Out-Null
-            Write-Host "✅ Z:\Downloads ve Z:\Temp oluşturuldu."
+            New-Item -ItemType Directory -Force "Z:\Downloads", "Z:\Temp" | Out-Null
             
-            Write-Host "🔗 Downloads klasörü yönlendiriliyor..."
-            $userDownloads = "C:\Users\Draghyper\Downloads"
-            if (Test-Path $userDownloads) {
-              Remove-Item -Path $userDownloads -Recurse -Force -ErrorAction SilentlyContinue
-              Write-Host "   Eski Downloads klasörü silindi."
-            }
-            cmd /c mklink /J $userDownloads "Z:\Downloads"
-            Write-Host "✅ Downloads → Z:\Downloads (Junction oluşturuldu)"
+            $dl = "C:\Users\Draghyper\Downloads"
+            if (Test-Path $dl) { Remove-Item $dl -Recurse -Force -ErrorAction SilentlyContinue }
+            cmd /c mklink /J $dl "Z:\Downloads"
             
-            Write-Host "🔗 Temp klasörü yönlendiriliyor..."
-            $sysTemp = $env:TEMP
-            if (Test-Path $sysTemp) {
-              Remove-Item -Path $sysTemp -Recurse -Force -ErrorAction SilentlyContinue
-              Write-Host "   Eski Temp klasörü silindi."
-            }
-            cmd /c mklink /J $sysTemp "Z:\Temp"
-            Write-Host "✅ Temp → Z:\Temp (Junction oluşturuldu)"
+            $tmp = $env:TEMP
+            if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+            cmd /c mklink /J $tmp "Z:\Temp"
             
-            Write-Host ""
-            Write-Host "============================================" -ForegroundColor Green
-            Write-Host "  ✅ YÖNLENDIRME TAMAMLANDI!" -ForegroundColor Green
-            Write-Host "============================================" -ForegroundColor Green
-            Write-Host ""
-            Write-Host " Bilgi:" -ForegroundColor Cyan
-            Write-Host "  • İndirmeler artık TeraBox'a (Z:) kaydedilecek"
-            Write-Host "  • C: diski dolmayacak"
-            Write-Host "  • Tüm dosyalar otomatik buluta yüklenecek"
+            Write-Host "[OK] Indirmeler ve Temp Z: diskine yonlendirildi."
           } else {
-            Write-Host "⚠️ Z: sürücüsü yok, yönlendirme atlanıyor."
-       
+            Write-Host "Z: yok, yonlendirme atlanıyor."
+          }
+
+      - name: 6. Tailscale Kur ve Baglan
+        shell: pwsh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          Write-Host "=== TAILSCALE ==="
+          curl.exe -sL -o "$env:TEMP\ts.msi" "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          Start-Process msiexec.exe -ArgumentList "/i `"$env:TEMP\ts.msi`" /quiet /norestart" -Wait
+          
+          $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          & $ts up --auth-key="$env:TAILSCALE_AUTH_KEY" --hostname="gh-$env:GITHUB_RUN_ID"
+          
+          Start-Sleep -Seconds 5
+          $ip = (& $ts ip -4 | Select-Object -First 1).Trim()
+          "RDP_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          
+          Write-Host "=========================================="
+          Write-Host "BAGLANMAYA HAZIR!"
+          Write-Host "IP   : $ip"
+          Write-Host "User : Draghyper"
+          Write-Host "Pass : (RDP_PASSWORD secret'in)"
+          Write-Host "=========================================="
+
+      - name: 7. Sistemi 6 Saat Acik Tut
+        shell: pwsh
+        run: |
+          Write-Host "Sistem 6 saat acik kalacak. IP: $env:RDP_IP"
+          Write-Host "IP gorununce hemen baglan, bu adimin bitmesini BEKLEME!"
+          for ($i = 1; $i -le 360; $i++) { 
+            Start-Sleep -Seconds 60 
+          }
