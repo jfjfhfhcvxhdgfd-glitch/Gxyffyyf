@@ -21,29 +21,42 @@ jobs:
           CLOUD_USER: ${{ secrets.CLOUD_USER }}
           CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
         run: |
+          $hatalar = @()
+          
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-            throw "RDP_PASSWORD secret eksik."
-          }
-          if ($env:RDP_PASSWORD.Length -lt 12 -or
+            $hatalar += "RDP_PASSWORD secret eksik."
+          } elseif ($env:RDP_PASSWORD.Length -lt 12 -or
               $env:RDP_PASSWORD -notmatch '[A-Z]' -or
               $env:RDP_PASSWORD -notmatch '[a-z]' -or
               $env:RDP_PASSWORD -notmatch '\d' -or
               $env:RDP_PASSWORD -notmatch '[^a-zA-Z0-9]') {
-            throw "RDP_PASSWORD en az 12 karakter; büyük harf, küçük harf, rakam ve sembol içermeli."
+            $hatalar += "RDP_PASSWORD en az 12 karakter; büyük harf, küçük harf, rakam ve sembol içermeli."
           }
+          
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            throw "TAILSCALE_AUTH_KEY secret eksik."
+            $hatalar += "TAILSCALE_AUTH_KEY secret eksik."
+          } elseif ($env:TAILSCALE_AUTH_KEY -notmatch '^tskey-auth-') {
+            $hatalar += "TAILSCALE_AUTH_KEY YANLIŞ FORMAT! 'tskey-auth-' ile başlamalı (API key değil, Auth key)."
           }
+          
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_URL)) {
-            throw "CLOUD_URL secret eksik."
+            $hatalar += "CLOUD_URL eksik! (WebDAV linki)"
           }
+          
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_USER)) {
-            throw "CLOUD_USER secret eksik."
+            $hatalar += "CLOUD_USER eksik! (WebDAV kullanıcı adı)"
           }
+          
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) {
-            throw "CLOUD_PASS secret eksik."
+            $hatalar += "CLOUD_PASS eksik! (WebDAV şifresi)"
           }
-          Write-Host "Gerekli secret kontrolleri tamamlandı."
+
+          if ($hatalar.Count -gt 0) {
+            Write-Host "HATALAR:" -ForegroundColor Red
+            $hatalar | ForEach-Object { Write-Host "- $_" -ForegroundColor Red }
+            throw "Secret kontrolü başarısız. GitHub Settings > Secrets kısmından eksikleri ekle."
+          }
+          Write-Host "Gerekli secret kontrolleri tamamlandı." -ForegroundColor Green
 
       - name: Configure Windows RDP
         shell: pwsh
@@ -158,7 +171,7 @@ jobs:
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
-          Write-Host "Gecici dosyalar temizlendi, disk alani acildi." -ForegroundColor Green
+          Write-Host "Geçici dosyalar temizlendi, disk alanı açıldı." -ForegroundColor Green
 
       - name: Install Tailscale
         shell: pwsh
@@ -233,20 +246,20 @@ jobs:
             -Filter "rclone-*-windows-amd64" | Select-Object -First 1
           $rcloneExe = Join-Path $rcloneDir.FullName "rclone.exe"
           $env:PATH += ";$($rcloneDir.FullName)"
-          Write-Host "WebDAV yapilandiriliyor..."
+          Write-Host "WebDAV yapılandırılıyor..."
           $env:RCLONE_CONFIG_MYDRIVE_TYPE = "webdav"
           $env:RCLONE_CONFIG_MYDRIVE_URL = $env:CLOUD_URL
           $env:RCLONE_CONFIG_MYDRIVE_USER = $env:CLOUD_USER
           $env:RCLONE_CONFIG_MYDRIVE_PASS = $env:CLOUD_PASS
           $env:RCLONE_CONFIG_MYDRIVE_VENDOR = "other"
-          Write-Host "WebDAV baglaniyor..."
+          Write-Host "WebDAV bağlanıyor..."
           Start-Process `
             -FilePath $rcloneExe `
             -ArgumentList "mount mydrive: Z: --vfs-cache-mode writes --volname 'Cloud Storage'" `
             -NoNewWindow -PassThru
           Start-Sleep -Seconds 15
           if (Test-Path "Z:\") {
-            Write-Host "WebDAV Z: surucusune baglandi!" -ForegroundColor Green
+            Write-Host "WebDAV Z: sürücüsüne bağlandı!" -ForegroundColor Green
             New-Item -ItemType Directory -Force -Path "Z:\Downloads" | Out-Null
             New-Item -ItemType Directory -Force -Path "Z:\Temp" | Out-Null
             $dl = "C:\Users\Draghyper\Downloads"
@@ -255,17 +268,17 @@ jobs:
             $tmp = $env:TEMP
             if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
             cmd /c mklink /J $tmp "Z:\Temp"
-            Write-Host "Indirmeler Z: surucusune yonlendirildi." -ForegroundColor Green
+            Write-Host "İndirmeler Z: sürücüsüne yönlendirildi." -ForegroundColor Green
           } else {
-            Write-Host "UYARI: Z: surucusu baglanamadi. CLOUD_URL, USER veya PASS degerlerini kontrol et." -ForegroundColor Red
+            Write-Host "UYARI: Z: sürücüsü bağlanamadı. CLOUD_URL, USER veya PASS değerlerini kontrol et." -ForegroundColor Red
           }
 
       - name: Open Microsoft Store
         shell: pwsh
         run: |
-          Write-Host "Microsoft Store aciliyor..."
+          Write-Host "Microsoft Store açılıyor..."
           Start-Process "explorer.exe" -ArgumentList "shell:AppsFolder\Microsoft.WindowsStore_8wekyb3d8bbwe!App"
-          Write-Host "Microsoft Store acildi. RDP ile baglandiktan sonra Store'dan Minecraft indirebilirsiniz." -ForegroundColor Green
+          Write-Host "Microsoft Store açıldı. RDP ile bağlandıktan sonra Store'dan Minecraft indirebilirsiniz." -ForegroundColor Green
 
       - name: Verify RDP and Audio Policies
         shell: pwsh
