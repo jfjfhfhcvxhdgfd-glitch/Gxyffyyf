@@ -54,7 +54,7 @@ jobs:
             -Name SecurityLayer -Value 2 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
           if (-not (Get-NetFirewallRule "RDP-Tailscale" -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name "RDP-Tailscale" -Direction Inbound `
+            New-NetFirewallRule -Name "RDP-Tailscale" -DisplayName "RDP over Tailscale" -Direction Inbound `
               -Protocol TCP -LocalPort 3389 -Action Allow | Out-Null
           }
           Set-Service TermService -StartupType Automatic
