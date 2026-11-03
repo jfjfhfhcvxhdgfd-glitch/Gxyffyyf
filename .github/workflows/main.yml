@@ -20,59 +20,89 @@ jobs:
           CLOUD_URL: ${{ secrets.CLOUD_URL }}
           CLOUD_USER: ${{ secrets.CLOUD_USER }}
           CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
-          CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
         run: |
-          $e = @()
-          if (![string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) { $pass = $env:CLOUD_PASS } 
-          elseif (![string]::IsNullOrWhiteSpace($env:CLOUD_COOKIE)) { $pass = $env:CLOUD_COOKIE }
+          $errors = @()
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { $errors += "RDP_PASSWORD missing" }
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { $errors += "TAILSCALE_AUTH_KEY missing" }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_URL)) { $errors += "CLOUD_URL missing" }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_USER)) { $errors += "CLOUD_USER missing" }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) { $errors += "CLOUD_PASS missing" }
           
-          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { $e += "RDP_PASSWORD missing" }
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { $e += "TAILSCALE_AUTH_KEY missing" }
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_URL)) { $e += "CLOUD_URL missing" }
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_USER)) { $e += "CLOUD_USER missing" }
-          if ([string]::IsNullOrWhiteSpace($pass)) { $e += "CLOUD_PASS or CLOUD_COOKIE missing" }
-          
-          if ($e.Count -gt 0) { $e | ForEach-Object { Write-Host $_ -ForegroundColor Red }; throw "Secret check failed" }
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            throw "Secret check failed"
+          }
           Write-Host "Secrets OK" -ForegroundColor Green
 
       - name: Configure RDP
         shell: pwsh
-        env: { RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }} }
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          $p = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          $pass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
           $u = Get-LocalUser "Draghyper" -ErrorAction SilentlyContinue
-          if (!$u) { New-LocalUser "Draghyper" -Password $p -PasswordNeverExpires | Out-Null } 
-          else { Set-LocalUser "Draghyper" -Password $p }
-          Add-LocalGroupMember "Administrators" "Draghyper" -ErrorAction SilentlyContinue
-          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections -Value 0 -Force
-          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name UserAuthentication -Value 1 -Force
-          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name SecurityLayer -Value 2 -Force
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          if (!(Get-NetFirewallRule "RDP-Tailscale" -ErrorAction SilentlyContinue)) { 
-            New-NetFirewallRule -Name "RDP-Tailscale" -Direction Inbound -Protocol TCP -LocalPort 3389 -Action Allow | Out-Null 
+          
+          if (-not $u) { 
+            New-LocalUser "Draghyper" -Password $pass -PasswordNeverExpires:$true | Out-Null 
+          } else { 
+            Set-LocalUser "Draghyper" -Password $pass 
           }
-          Set-Service TermService -StartupType Automatic; Restart-Service TermService -Force
+          
+          Add-LocalGroupMember "Administrators" "Draghyper" -ErrorAction SilentlyContinue
+          
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
+            -Name fDenyTSConnections -Value 0 -Force
+            
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name UserAuthentication -Value 1 -Force
+            
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name SecurityLayer -Value 2 -Force
+            
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          
+          if (-not (Get-NetFirewallRule "RDP-Tailscale" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -Name "RDP-Tailscale" -Direction Inbound `
+              -Protocol TCP -LocalPort 3389 -Action Allow | Out-Null
+          }
+          
+          Set-Service TermService -StartupType Automatic
+          Restart-Service TermService -Force
           Write-Host "RDP OK" -ForegroundColor Green
 
-      - name: Enable Audio
+      - name: Audio and Microphone
         shell: pwsh
         run: |
           $p = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
           New-Item -Path $p -Force | Out-Null
-          New-ItemProperty -Path $p -Name fDisableAudioCapture -PropertyType DWord -Value 0 -Force | Out-Null
-          New-ItemProperty -Path $p -Name fDisableAudioPlayback -PropertyType DWord -Value 0 -Force | Out-Null
-          foreach ($s in @("AudioEndpointBuilder", "Audiosrv")) { 
+          
+          New-ItemProperty -Path $p -Name fDisableAudioCapture `
+            -PropertyType DWord -Value 0 -Force | Out-Null
+            
+          New-ItemProperty -Path $p -Name fDisableAudioPlayback `
+            -PropertyType DWord -Value 0 -Force | Out-Null
+            
+          foreach ($s in @("AudioEndpointBuilder", "Audiosrv")) {
             $sv = Get-Service $s -ErrorAction SilentlyContinue
-            if ($sv) { try { Set-Service $s -StartupType Automatic; Start-Service $s } catch {} } 
+            if ($sv) { 
+              try { Set-Service $s -StartupType Automatic; Start-Service $s } catch {} 
+            }
           }
-          gpupdate /target:computer /force; Restart-Service TermService -Force; Start-Sleep 3
+          
+          gpupdate /target:computer /force
+          Restart-Service TermService -Force
+          Start-Sleep 3
           Write-Host "Audio OK" -ForegroundColor Green
 
       - name: Free Disk Space
         shell: pwsh
         run: |
-          foreach ($path in @($env:TEMP, "$env:WINDIR\Temp")) { 
-            if (Test-Path $path) { Get-ChildItem $path -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue } 
+          $paths = @($env:TEMP, "$env:WINDIR\Temp")
+          foreach ($path in $paths) {
+            if (Test-Path $path) { 
+              Get-ChildItem $path -Force -ErrorAction SilentlyContinue | `
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue 
+            }
           }
           Write-Host "Disk cleaned" -ForegroundColor Green
 
@@ -87,7 +117,8 @@ jobs:
 
       - name: Connect Tailscale
         shell: pwsh
-        env: { TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }} }
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           & $env:TAILSCALE_EXE up --auth-key="$env:TAILSCALE_AUTH_KEY" --hostname="gh-$env:GITHUB_RUN_ID"
           Start-Sleep 5
@@ -105,38 +136,52 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait
           Write-Host "WinFsp OK" -ForegroundColor Green
 
-      - name: Mount Cloud Drive (WebDAV)
+      - name: Mount WebDAV Z Drive
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
           CLOUD_URL: ${{ secrets.CLOUD_URL }}
           CLOUD_USER: ${{ secrets.CLOUD_USER }}
           CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
-          CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
         run: |
-          $pass = if (![string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) { $env:CLOUD_PASS } else { $env:CLOUD_COOKIE }
-          $base = "C:\ProgramData\rclone"; New-Item -ItemType Directory -Force -Path $base | Out-Null
+          $base = "C:\ProgramData\rclone"
+          New-Item -ItemType Directory -Force -Path $base | Out-Null
           
           curl.exe -sL -o "$env:TEMP\r.zip" "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
           Expand-Archive "$env:TEMP\r.zip" "$env:TEMP\r" -Force
-          $rdir = Get-ChildItem "$env:TEMP\r" -Filter "rclone-*-windows-amd64" | Select-Object -First 1
-          $exe = "$base\rclone.exe"; Copy-Item "$($rdir.FullName)\rclone.exe" $exe -Force
           
-          $obs = (& $exe obscure $pass).Trim()
+          $rdir = Get-ChildItem "$env:TEMP\r" -Filter "rclone-*-windows-amd64" | Select-Object -First 1
+          $exe = "$base\rclone.exe"
+          Copy-Item "$($rdir.FullName)\rclone.exe" $exe -Force
+          
+          $obs = (& $exe obscure $env:CLOUD_PASS).Trim()
           $cfg = "$base\rclone.conf"
-          "[mydrive]`ntype = webdav`nurl = $($env:CLOUD_URL)`nvendor = other`nuser = $($env:CLOUD_USER)`npass = $obs" | Set-Content $cfg -Encoding ASCII
+          
+          $configLines = @(
+            "[mydrive]",
+            "type = webdav",
+            "url = $($env:CLOUD_URL)",
+            "vendor = other",
+            "user = $($env:CLOUD_USER)",
+            "pass = $obs"
+          )
+          $configLines | Set-Content $cfg -Encoding ASCII
           
           Write-Host "Testing connection..."
           & $exe lsd mydrive: --config $cfg --contimeout 30s --timeout 60s --retries 1 --log-level INFO 2>&1
+          
           if ($LASTEXITCODE -ne 0) { 
             Write-Host "WARNING: Connection failed. Check URL/USER/PASS. RDP will still work." -ForegroundColor Yellow
             exit 0 
           }
           
           $script = "$base\mount.ps1"
-          "if (!(Test-Path 'Z:\')) { & '$exe' mount mydrive: Z: --config '$cfg' --vfs-cache-mode writes --volname Cloud --network-mode }" | Set-Content $script -Encoding ASCII
-          
-          schtasks.exe /Create /TN "RcloneMount" /SC ONLOGON /RU "Draghyper" /RP "$env:RDP_PASSWORD" /TR "powershell -NoProfile -ExecutionPolicy Bypass -File `"$script`"" /F | Out-Null
+          "if (!(Test-Path 'Z:\')) { & '$exe' mount mydrive: Z: --config '$cfg' --vfs-cache-mode writes --volname Cloud --network-mode }" | `
+            Set-Content $script -Encoding ASCII
+            
+          schtasks.exe /Create /TN "RcloneMount" /SC ONLOGON /RU "Draghyper" /RP "$env:RDP_PASSWORD" `
+            /TR "powershell -NoProfile -ExecutionPolicy Bypass -File `"$script`"" /F | Out-Null
+            
           Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" -WindowStyle Hidden
           
           for ($i = 1; $i -le 30; $i++) { 
