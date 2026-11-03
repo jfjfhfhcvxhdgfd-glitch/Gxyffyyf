@@ -17,7 +17,9 @@ jobs:
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
+          CLOUD_URL: ${{ secrets.CLOUD_URL }}
+          CLOUD_USER: ${{ secrets.CLOUD_USER }}
+          CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
             throw "RDP_PASSWORD secret eksik."
@@ -32,8 +34,14 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
             throw "TAILSCALE_AUTH_KEY secret eksik."
           }
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_COOKIE)) {
-            throw "CLOUD_COOKIE secret eksik."
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_URL)) {
+            throw "CLOUD_URL secret eksik."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_USER)) {
+            throw "CLOUD_USER secret eksik."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) {
+            throw "CLOUD_PASS secret eksik."
           }
           Write-Host "Gerekli secret kontrolleri tamamlandi."
 
@@ -194,10 +202,12 @@ jobs:
           Write-Host "RDP IP: $ip"
           Write-Host "Kullanici adi: Draghyper"
 
-      - name: Install Rclone and Mount TeraBox (DEBUG)
+      - name: Install Rclone and Mount WebDAV as Z: Drive
         shell: pwsh
         env:
-          CLOUD_COOKIE: ${{ secrets.CLOUD_COOKIE }}
+          CLOUD_URL: ${{ secrets.CLOUD_URL }}
+          CLOUD_USER: ${{ secrets.CLOUD_USER }}
+          CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -217,27 +227,23 @@ jobs:
           $rcloneExe = Join-Path $rcloneDir.FullName "rclone.exe"
           $env:PATH += ";$($rcloneDir.FullName)"
 
-          $env:RCLONE_CONFIG_MYCLOUD_TYPE = "terabox"
-          $env:RCLONE_CONFIG_MYCLOUD_NDUS = $env:CLOUD_COOKIE
+          Write-Host "WebDAV yapilandiriliyor..."
+          $env:RCLONE_CONFIG_MYDRIVE_TYPE = "webdav"
+          $env:RCLONE_CONFIG_MYDRIVE_URL = $env:CLOUD_URL
+          $env:RCLONE_CONFIG_MYDRIVE_USER = $env:CLOUD_USER
+          $env:RCLONE_CONFIG_MYDRIVE_PASS = $env:CLOUD_PASS
+          $env:RCLONE_CONFIG_MYDRIVE_VENDOR = "other"
 
-          Write-Host "Rclone baglanti testi yapiliyor..."
-          & $rcloneExe lsd mycloud: 2>&1
-
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "RCLONE HATASI: TeraBox'a baglanilamadi!" -ForegroundColor Red
-            throw "Rclone TeraBox'a baglanamadi. CLOUD_COOKIE hatali veya suresi dolmus."
-          }
-
-          Write-Host "Rclone baglandi, Z: surucusu olusturuluyor..."
+          Write-Host "WebDAV baglaniyor..."
           Start-Process `
             -FilePath $rcloneExe `
-            -ArgumentList "mount mycloud: Z: --vfs-cache-mode writes --volname 'TeraBox 1TB'" `
+            -ArgumentList "mount mydrive: Z: --vfs-cache-mode writes --volname 'Cloud Storage'" `
             -NoNewWindow -PassThru
 
           Start-Sleep -Seconds 15
 
           if (Test-Path "Z:\") {
-            Write-Host "TeraBox Z: surucusune baglandi."
+            Write-Host "WebDAV Z: surucusune baglandi!" -ForegroundColor Green
 
             New-Item -ItemType Directory -Force -Path "Z:\Downloads" | Out-Null
             New-Item -ItemType Directory -Force -Path "Z:\Temp" | Out-Null
@@ -254,10 +260,21 @@ jobs:
             }
             cmd /c mklink /J $tmp "Z:\Temp"
 
-            Write-Host "Indirmeler Z: surucusune yonlendirildi."
+            Write-Host "Indirmeler Z: surucusune yonlendirildi." -ForegroundColor Green
           } else {
-            Write-Host "UYARI: Z: surucusu baglanamadi. CLOUD_COOKIE degerini kontrol et."
+            Write-Host "UYARI: Z: surucusu baglanamadi. CLOUD_URL, USER veya PASS degerlerini kontrol et." -ForegroundColor Red
           }
+
+      - name: Open Microsoft Store
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "Microsoft Store aciliyor..."
+          
+          Start-Process "explorer.exe" -ArgumentList "shell:AppsFolder\Microsoft.WindowsStore_8wekyb3d8bbwe!App"
+          
+          Write-Host "Microsoft Store acildi. RDP ile baglandiktan sonra Store'dan Minecraft indirebilirsiniz." -ForegroundColor Green
 
       - name: Verify RDP and Audio Policies
         shell: pwsh
