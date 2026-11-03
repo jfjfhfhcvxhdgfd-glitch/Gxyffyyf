@@ -27,7 +27,6 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_URL)) { $errors += "CLOUD_URL missing" }
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_USER)) { $errors += "CLOUD_USER missing" }
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) { $errors += "CLOUD_PASS missing" }
-          
           if ($errors.Count -gt 0) {
             $errors | ForEach-Object { Write-Host $_ -ForegroundColor Red }
             throw "Secret check failed"
@@ -41,31 +40,23 @@ jobs:
         run: |
           $pass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
           $u = Get-LocalUser "Draghyper" -ErrorAction SilentlyContinue
-          
           if (-not $u) { 
             New-LocalUser "Draghyper" -Password $pass -PasswordNeverExpires:$true | Out-Null 
           } else { 
             Set-LocalUser "Draghyper" -Password $pass 
           }
-          
           Add-LocalGroupMember "Administrators" "Draghyper" -ErrorAction SilentlyContinue
-          
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' `
             -Name fDenyTSConnections -Value 0 -Force
-            
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name UserAuthentication -Value 1 -Force
-            
           Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
             -Name SecurityLayer -Value 2 -Force
-            
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
-          
           if (-not (Get-NetFirewallRule "RDP-Tailscale" -ErrorAction SilentlyContinue)) {
             New-NetFirewallRule -Name "RDP-Tailscale" -Direction Inbound `
               -Protocol TCP -LocalPort 3389 -Action Allow | Out-Null
           }
-          
           Set-Service TermService -StartupType Automatic
           Restart-Service TermService -Force
           Write-Host "RDP OK" -ForegroundColor Green
@@ -75,20 +66,16 @@ jobs:
         run: |
           $p = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
           New-Item -Path $p -Force | Out-Null
-          
           New-ItemProperty -Path $p -Name fDisableAudioCapture `
             -PropertyType DWord -Value 0 -Force | Out-Null
-            
           New-ItemProperty -Path $p -Name fDisableAudioPlayback `
             -PropertyType DWord -Value 0 -Force | Out-Null
-            
           foreach ($s in @("AudioEndpointBuilder", "Audiosrv")) {
             $sv = Get-Service $s -ErrorAction SilentlyContinue
             if ($sv) { 
               try { Set-Service $s -StartupType Automatic; Start-Service $s } catch {} 
             }
           }
-          
           gpupdate /target:computer /force
           Restart-Service TermService -Force
           Start-Sleep 3
@@ -146,17 +133,13 @@ jobs:
         run: |
           $base = "C:\ProgramData\rclone"
           New-Item -ItemType Directory -Force -Path $base | Out-Null
-          
           curl.exe -sL -o "$env:TEMP\r.zip" "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
           Expand-Archive "$env:TEMP\r.zip" "$env:TEMP\r" -Force
-          
           $rdir = Get-ChildItem "$env:TEMP\r" -Filter "rclone-*-windows-amd64" | Select-Object -First 1
           $exe = "$base\rclone.exe"
           Copy-Item "$($rdir.FullName)\rclone.exe" $exe -Force
-          
           $obs = (& $exe obscure $env:CLOUD_PASS).Trim()
           $cfg = "$base\rclone.conf"
-          
           $configLines = @(
             "[mydrive]",
             "type = webdav",
@@ -166,29 +149,22 @@ jobs:
             "pass = $obs"
           )
           $configLines | Set-Content $cfg -Encoding ASCII
-          
           Write-Host "Testing connection..."
           & $exe lsd mydrive: --config $cfg --contimeout 30s --timeout 60s --retries 1 --log-level INFO 2>&1
-          
           if ($LASTEXITCODE -ne 0) { 
             Write-Host "WARNING: Connection failed. Check URL/USER/PASS. RDP will still work." -ForegroundColor Yellow
             exit 0 
           }
-          
           $script = "$base\mount.ps1"
           "if (!(Test-Path 'Z:\')) { & '$exe' mount mydrive: Z: --config '$cfg' --vfs-cache-mode writes --volname Cloud --network-mode }" | `
             Set-Content $script -Encoding ASCII
-            
           schtasks.exe /Create /TN "RcloneMount" /SC ONLOGON /RU "Draghyper" /RP "$env:RDP_PASSWORD" `
             /TR "powershell -NoProfile -ExecutionPolicy Bypass -File `"$script`"" /F | Out-Null
-            
           Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$script`"" -WindowStyle Hidden
-          
           for ($i = 1; $i -le 30; $i++) { 
             if (Test-Path "Z:\") { Write-Host "Z: Drive OK" -ForegroundColor Green; break }
             Start-Sleep 1 
           }
-          
           if (Test-Path "Z:\") {
             New-Item -ItemType Directory -Force "Z:\Downloads" | Out-Null
             $dl = "$env:USERPROFILE\Downloads"
