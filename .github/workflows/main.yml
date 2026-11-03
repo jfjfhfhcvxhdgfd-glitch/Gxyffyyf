@@ -21,29 +21,34 @@ jobs:
           CLOUD_USER: ${{ secrets.CLOUD_USER }}
           CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
         run: |
+          $errors = @()
+
           if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-            throw "RDP_PASSWORD secret eksik."
+            $errors += "RDP_PASSWORD missing"
           }
-          if ($env:RDP_PASSWORD.Length -lt 12 -or
-              $env:RDP_PASSWORD -notmatch '[A-Z]' -or
-              $env:RDP_PASSWORD -notmatch '[a-z]' -or
-              $env:RDP_PASSWORD -notmatch '\d' -or
-              $env:RDP_PASSWORD -notmatch '[^a-zA-Z0-9]') {
-            throw "RDP_PASSWORD en az 12 karakter; buyuk harf, kucuk harf, rakam ve sembol icermeli."
-          }
+
           if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            throw "TAILSCALE_AUTH_KEY secret eksik."
+            $errors += "TAILSCALE_AUTH_KEY missing"
           }
+
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_URL)) {
-            throw "CLOUD_URL secret eksik."
+            $errors += "CLOUD_URL missing"
           }
+
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_USER)) {
-            throw "CLOUD_USER secret eksik."
+            $errors += "CLOUD_USER missing"
           }
+
           if ([string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) {
-            throw "CLOUD_PASS secret eksik."
+            $errors += "CLOUD_PASS missing"
           }
-          Write-Host "Gerekli secret kontrolleri tamamlandi."
+
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            throw "Secret check failed"
+          }
+
+          Write-Host "Secrets OK" -ForegroundColor Green
 
       - name: Configure Windows RDP
         shell: pwsh
@@ -52,86 +57,100 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $securePassword = ConvertTo-SecureString `
-            $env:RDP_PASSWORD -AsPlainText -Force
-
+          $securePassword = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
           $user = Get-LocalUser -Name "Draghyper" -ErrorAction SilentlyContinue
 
           if ($null -eq $user) {
-            New-LocalUser -Name "Draghyper" `
+            New-LocalUser `
+              -Name "Draghyper" `
               -Password $securePassword `
+              -PasswordNeverExpires `
               -Description "RDP account" | Out-Null
           } else {
             Set-LocalUser -Name "Draghyper" -Password $securePassword
           }
 
-          Add-LocalGroupMember -Group "Administrators" `
-            -Member "Draghyper" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "Draghyper" -ErrorAction SilentlyContinue
 
           Set-ItemProperty `
             -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-            -Name fDenyTSConnections -Value 0
+            -Name fDenyTSConnections `
+            -Value 0 `
+            -Force
 
           $rdpPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-          Set-ItemProperty -Path $rdpPath -Name UserAuthentication -Value 1
-          Set-ItemProperty -Path $rdpPath -Name SecurityLayer -Value 2
 
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" `
-            -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $rdpPath -Name UserAuthentication -Value 1 -Force
+          Set-ItemProperty -Path $rdpPath -Name SecurityLayer -Value 2 -Force
 
-          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" `
-              -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name "RDP-Tailscale" `
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+
+          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule `
+              -Name "RDP-Tailscale" `
               -DisplayName "RDP over Tailscale" `
-              -Direction Inbound -Protocol TCP -LocalPort 3389 `
+              -Direction Inbound `
+              -Protocol TCP `
+              -LocalPort 3389 `
               -Action Allow | Out-Null
           }
 
           Set-Service -Name TermService -StartupType Automatic
           Restart-Service -Name TermService -Force
 
-          Write-Host "Windows RDP ayarlari tamamlandi."
+          Write-Host "RDP OK" -ForegroundColor Green
 
-      - name: Enable RDP Audio and Microphone Redirection
+      - name: Enable RDP Audio and Microphone
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          $ErrorActionPreference = "Continue"
 
           $policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
           New-Item -Path $policyPath -Force | Out-Null
 
-          New-ItemProperty -Path $policyPath `
-            -Name fDisableAudioCapture -PropertyType DWord `
-            -Value 0 -Force | Out-Null
+          New-ItemProperty `
+            -Path $policyPath `
+            -Name fDisableAudioCapture `
+            -PropertyType DWord `
+            -Value 0 `
+            -Force | Out-Null
 
-          New-ItemProperty -Path $policyPath `
-            -Name fDisableAudioPlayback -PropertyType DWord `
-            -Value 0 -Force | Out-Null
+          New-ItemProperty `
+            -Path $policyPath `
+            -Name fDisableAudioPlayback `
+            -PropertyType DWord `
+            -Value 0 `
+            -Force | Out-Null
 
           foreach ($serviceName in @("AudioEndpointBuilder", "Audiosrv")) {
-            $service = Get-Service -Name $serviceName `
-              -ErrorAction SilentlyContinue
+            $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
 
             if ($null -ne $service) {
               try {
-                Set-Service -Name $serviceName -StartupType Automatic `
-                  -ErrorAction Stop
+                Set-Service -Name $serviceName -StartupType Automatic -ErrorAction Stop
                 Start-Service -Name $serviceName -ErrorAction Stop
-                Write-Host "$serviceName baslatildi."
+                Write-Host "$serviceName started"
               } catch {
-                Write-Warning "$serviceName baslatilamadi: $($_.Exception.Message)"
+                Write-Warning "$serviceName could not be started: $($_.Exception.Message)"
               }
             }
           }
 
           gpupdate /target:computer /force
+
           Restart-Service -Name TermService -Force
           Start-Sleep -Seconds 3
-          Write-Host "RDP servisi ses yonlendirme ilkelerinden sonra yeniden baslatildi."
+
+          Write-Host "Audio OK" -ForegroundColor Green
 
       - name: Free Temporary Disk Space
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "Disk before cleanup:"
+          Get-PSDrive C
+
           $tempPaths = @(
             $env:TEMP,
             "$env:WINDIR\Temp"
@@ -139,40 +158,44 @@ jobs:
 
           foreach ($path in $tempPaths) {
             if (Test-Path $path) {
-              Get-ChildItem -LiteralPath $path -Force `
-                -ErrorAction SilentlyContinue |
-              Remove-Item -Recurse -Force `
-                -ErrorAction SilentlyContinue
+              Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue |
+                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
             }
           }
 
-          Write-Host "Disk space after cleanup:"
+          Write-Host "Disk after cleanup:"
           Get-PSDrive C
 
       - name: Install Tailscale
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           $msi = Join-Path $env:TEMP "tailscale-setup.msi"
+
           Invoke-WebRequest `
             -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
             -OutFile $msi
 
-          $process = Start-Process msiexec.exe `
+          $process = Start-Process `
+            -FilePath "msiexec.exe" `
             -ArgumentList "/i `"$msi`" /quiet /norestart" `
-            -Wait -PassThru
+            -Wait `
+            -PassThru
 
           if ($process.ExitCode -notin @(0, 3010)) {
-            throw "Tailscale kurulumu basarisiz. Kod: $($process.ExitCode)"
+            throw "Tailscale install failed. Exit code: $($process.ExitCode)"
           }
 
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
           if (-not (Test-Path $tailscale)) {
-            throw "Tailscale programi bulunamadi."
+            throw "Tailscale exe not found"
           }
 
-          "TAILSCALE_EXE=$tailscale" |
-            Out-File -FilePath $env:GITHUB_ENV -Append
+          "TAILSCALE_EXE=$tailscale" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+          Write-Host "Tailscale install OK" -ForegroundColor Green
 
       - name: Connect Tailscale
         shell: pwsh
@@ -180,6 +203,7 @@ jobs:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           $ErrorActionPreference = "Stop"
+
           $hostname = "gh-runner-$env:GITHUB_RUN_ID"
 
           & $env:TAILSCALE_EXE up `
@@ -187,124 +211,280 @@ jobs:
             --hostname="$hostname"
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Tailscale girisi basarisiz. Auth key ve cihaz politikasini kontrol et."
+            throw "Tailscale login failed"
           }
 
           Start-Sleep -Seconds 5
+
           $ip = (& $env:TAILSCALE_EXE ip -4 | Select-Object -First 1).Trim()
 
           if ([string]::IsNullOrWhiteSpace($ip)) {
-            throw "Tailscale IPv4 adresi alinamadi."
+            throw "Tailscale IPv4 not found"
           }
 
-          "RDP_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Tailscale baglantisi hazir."
-          Write-Host "RDP IP: $ip"
-          Write-Host "Kullanici adi: Draghyper"
+          "RDP_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
-      - name: Install Rclone and Mount WebDAV as Z: Drive
+          Write-Host "Tailscale OK" -ForegroundColor Green
+          Write-Host "RDP IP: $ip"
+          Write-Host "Username: Draghyper"
+
+      - name: Install WinFsp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "WinFsp downloading..."
+
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/winfsp/winfsp/releases/latest"
+          $asset = $release.assets | Where-Object { $_.name -like "*.msi" } | Select-Object -First 1
+
+          if ($null -eq $asset) {
+            throw "WinFsp MSI asset not found"
+          }
+
+          $msi = Join-Path $env:TEMP "winfsp.msi"
+
+          Invoke-WebRequest `
+            -Uri $asset.browser_download_url `
+            -OutFile $msi
+
+          $process = Start-Process `
+            -FilePath "msiexec.exe" `
+            -ArgumentList "/i `"$msi`" /quiet /norestart" `
+            -Wait `
+            -PassThru
+
+          if ($process.ExitCode -notin @(0, 3010)) {
+            throw "WinFsp install failed. Exit code: $($process.ExitCode)"
+          }
+
+          Write-Host "WinFsp OK" -ForegroundColor Green
+
+      - name: Install Rclone and Mount WebDAV Z Drive
         shell: pwsh
         env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
           CLOUD_URL: ${{ secrets.CLOUD_URL }}
           CLOUD_USER: ${{ secrets.CLOUD_USER }}
           CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
         run: |
           $ErrorActionPreference = "Stop"
 
-          Write-Host "Rclone indiriliyor..."
+          Write-Host "Rclone downloading..."
+
+          $base = "C:\ProgramData\rclone"
+          New-Item -ItemType Directory -Force -Path $base | Out-Null
+
+          $zip = Join-Path $env:TEMP "rclone.zip"
+          $extract = Join-Path $env:TEMP "rclone-extract"
+
           curl.exe -sL `
-            -o "$env:TEMP\rclone.zip" `
+            -o "$zip" `
             "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
 
           Expand-Archive `
-            -Path "$env:TEMP\rclone.zip" `
-            -DestinationPath "$env:TEMP\rclone" -Force
+            -Path $zip `
+            -DestinationPath $extract `
+            -Force
 
           $rcloneDir = Get-ChildItem `
-            -Path "$env:TEMP\rclone" `
+            -Path $extract `
             -Filter "rclone-*-windows-amd64" | Select-Object -First 1
 
-          $rcloneExe = Join-Path $rcloneDir.FullName "rclone.exe"
-          $env:PATH += ";$($rcloneDir.FullName)"
-
-          Write-Host "WebDAV yapilandiriliyor..."
-          $env:RCLONE_CONFIG_MYDRIVE_TYPE = "webdav"
-          $env:RCLONE_CONFIG_MYDRIVE_URL = $env:CLOUD_URL
-          $env:RCLONE_CONFIG_MYDRIVE_USER = $env:CLOUD_USER
-          $env:RCLONE_CONFIG_MYDRIVE_PASS = $env:CLOUD_PASS
-          $env:RCLONE_CONFIG_MYDRIVE_VENDOR = "other"
-
-          Write-Host "WebDAV baglaniyor..."
-          Start-Process `
-            -FilePath $rcloneExe `
-            -ArgumentList "mount mydrive: Z: --vfs-cache-mode writes --volname 'Cloud Storage'" `
-            -NoNewWindow -PassThru
-
-          Start-Sleep -Seconds 15
-
-          if (Test-Path "Z:\") {
-            Write-Host "WebDAV Z: surucusune baglandi."
-
-            New-Item -ItemType Directory -Force -Path "Z:\Downloads" | Out-Null
-            New-Item -ItemType Directory -Force -Path "Z:\Temp" | Out-Null
-
-            $dl = "C:\Users\Draghyper\Downloads"
-            if (Test-Path $dl) {
-              Remove-Item $dl -Recurse -Force -ErrorAction SilentlyContinue
-            }
-            cmd /c mklink /J $dl "Z:\Downloads"
-
-            $tmp = $env:TEMP
-            if (Test-Path $tmp) {
-              Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
-            }
-            cmd /c mklink /J $tmp "Z:\Temp"
-
-            Write-Host "Indirmeler Z: surucusune yonlendirildi."
-          } else {
-            Write-Host "UYARI: Z: surucusu baglanamadi. CLOUD_URL, USER veya PASS degerlerini kontrol et."
+          if ($null -eq $rcloneDir) {
+            throw "Rclone folder not found"
           }
 
-      - name: Open Microsoft Store
+          $rcloneExeSource = Join-Path $rcloneDir.FullName "rclone.exe"
+          $rcloneExe = Join-Path $base "rclone.exe"
+
+          Copy-Item `
+            -Path $rcloneExeSource `
+            -Destination $rcloneExe `
+            -Force
+
+          Write-Host "Rclone OK" -ForegroundColor Green
+
+          $obscured = (& $rcloneExe obscure $env:CLOUD_PASS).Trim()
+
+          if ([string]::IsNullOrWhiteSpace($obscured)) {
+            throw "Rclone password obscure failed"
+          }
+
+          $configFile = Join-Path $base "rclone.conf"
+          $testLog = Join-Path $base "test.log"
+          $mountLog = Join-Path $base "mount.log"
+
+          $configLines = @(
+            "[mydrive]",
+            "type = webdav",
+            "url = $env:CLOUD_URL",
+            "vendor = other",
+            "user = $env:CLOUD_USER",
+            "pass = $obscured"
+          )
+
+          Set-Content `
+            -Path $configFile `
+            -Value $configLines `
+            -Encoding ASCII
+
+          Write-Host "Testing WebDAV login..."
+
+          & $rcloneExe lsd mydrive: `
+            --config "$configFile" `
+            --contimeout 30s `
+            --timeout 60s `
+            --retries 1 `
+            --low-level-retries 1 `
+            --log-file "$testLog" `
+            --log-level INFO 2>&1
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "WARNING: WebDAV test failed. RDP will continue without Z drive." -ForegroundColor Yellow
+            Write-Host "Check CLOUD_URL CLOUD_USER CLOUD_PASS"
+            if (Test-Path $testLog) {
+              Get-Content $testLog -Tail 40
+            }
+            exit 0
+          }
+
+          Write-Host "WebDAV test OK" -ForegroundColor Green
+
+          $mountScript = Join-Path $base "mount-z.ps1"
+
+          $mountLines = @(
+            "if (Test-Path 'Z:\') { exit 0 }",
+            "& '$rcloneExe' mount mydrive: Z: --config '$configFile' --vfs-cache-mode writes --volname Cloud --network-mode --log-file '$mountLog' --log-level INFO"
+          )
+
+          Set-Content `
+            -Path $mountScript `
+            -Value $mountLines `
+            -Encoding ASCII
+
+          $taskRun = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$mountScript`""
+
+          schtasks.exe /Create `
+            /TN "RcloneMountZ" `
+            /SC ONLOGON `
+            /RU "Draghyper" `
+            /RP "$env:RDP_PASSWORD" `
+            /TR "$taskRun" `
+            /F | Out-Null
+
+          Write-Host "Starting mount process..."
+
+          Start-Process `
+            -FilePath "powershell.exe" `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$mountScript`"" `
+            -WindowStyle Hidden
+
+          $ok = $false
+
+          for ($i = 1; $i -le 60; $i++) {
+            if (Test-Path "Z:\") {
+              $ok = $true
+              break
+            }
+            Start-Sleep -Seconds 1
+          }
+
+          if ($ok) {
+            Write-Host "WebDAV Z drive OK" -ForegroundColor Green
+
+            New-Item -ItemType Directory -Force -Path "Z:\Downloads" | Out-Null
+
+            $redirectScript = "C:\ProgramData\redirect-downloads.ps1"
+
+            $redirectLines = @(
+              "`$ErrorActionPreference = 'SilentlyContinue'",
+              "if (-not (Test-Path 'Z:\')) { exit 0 }",
+              "New-Item -ItemType Directory -Force -Path 'Z:\Downloads' | Out-Null",
+              "`$dl = Join-Path `$env:USERPROFILE 'Downloads'",
+              "if (Test-Path `$dl) {",
+              "  `$item = Get-Item `$dl -Force",
+              "  if ((`$item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 0 }",
+              "  Remove-Item `$dl -Recurse -Force",
+              "}",
+              "cmd /c mklink /J `"`$dl`" `"Z:\Downloads`""
+            )
+
+            Set-Content `
+              -Path $redirectScript `
+              -Value $redirectLines `
+              -Encoding ASCII
+
+            $redirectRun = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$redirectScript`""
+
+            schtasks.exe /Create `
+              /TN "RedirectDownloadsToZ" `
+              /SC ONLOGON `
+              /RU "Draghyper" `
+              /RP "$env:RDP_PASSWORD" `
+              /TR "$redirectRun" `
+              /F | Out-Null
+
+            Write-Host "Downloads will redirect to Z after Draghyper login" -ForegroundColor Green
+          } else {
+            Write-Host "WARNING: Z drive not ready yet. It will retry when Draghyper logs in." -ForegroundColor Yellow
+            if (Test-Path $mountLog) {
+              Get-Content $mountLog -Tail 40
+            }
+          }
+
+      - name: Create Microsoft Store Shortcut
         shell: pwsh
         run: |
           $ErrorActionPreference = "Continue"
 
-          Write-Host "Microsoft Store aciliyor..."
-          
+          $desktop = "$env:PUBLIC\Desktop"
+
+          $shell = New-Object -ComObject WScript.Shell
+          $shortcut = $shell.CreateShortcut("$desktop\Microsoft Store.lnk")
+          $shortcut.TargetPath = "explorer.exe"
+          $shortcut.Arguments = "shell:AppsFolder\Microsoft.WindowsStore_8wekyb3d8bbwe!App"
+          $shortcut.Save()
+
           Start-Process "explorer.exe" -ArgumentList "shell:AppsFolder\Microsoft.WindowsStore_8wekyb3d8bbwe!App"
-          
-          Write-Host "Microsoft Store acildi. RDP ile baglandiktan sonra Store'dan Minecraft indirebilirsiniz." -ForegroundColor Green
+
+          Write-Host "Microsoft Store shortcut created" -ForegroundColor Green
 
       - name: Verify RDP and Audio Policies
         shell: pwsh
         run: |
-          $rdp = Get-ItemProperty `
-            "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
-          Write-Host "RDP etkin: $($rdp.fDenyTSConnections -eq 0)"
+          $ErrorActionPreference = "Continue"
+
+          $rdp = Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
+          Write-Host "RDP enabled: $($rdp.fDenyTSConnections -eq 0)"
 
           $policy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          $audio = Get-ItemProperty -Path $policy
+          $audio = Get-ItemProperty -Path $policy -ErrorAction SilentlyContinue
 
-          Write-Host "Mikrofon yonlendirmesi engellenmiyor: $($audio.fDisableAudioCapture -eq 0)"
-          Write-Host "Ses cikisi yonlendirmesi engellenmiyor: $($audio.fDisableAudioPlayback -eq 0)"
+          if ($null -ne $audio) {
+            Write-Host "Mic redirection allowed: $($audio.fDisableAudioCapture -eq 0)"
+            Write-Host "Audio redirection allowed: $($audio.fDisableAudioPlayback -eq 0)"
+          }
 
-          Get-NetTCPConnection -LocalPort 3389 -State Listen `
-            -ErrorAction SilentlyContinue |
+          Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue |
             Select-Object LocalAddress, LocalPort, State |
             Format-Table
 
+          if (Test-Path "Z:\") {
+            Write-Host "Z drive visible: YES" -ForegroundColor Green
+          } else {
+            Write-Host "Z drive visible: NO" -ForegroundColor Yellow
+          }
+
       - name: Maintain Connection
         shell: pwsh
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          Write-Host "RDP oturumu 6 saate kadar acik tutulacak."
-          Write-Host "Adres: $env:RDP_IP"
-          Write-Host "Kullanici adi: Draghyper"
-          Write-Host "Parola, GitHub RDP_PASSWORD secret degeridir."
+          Write-Host "RDP session will stay open for 6 hours"
+          Write-Host "Address: $env:RDP_IP"
+          Write-Host "Username: Draghyper"
+          Write-Host "Password: GitHub RDP_PASSWORD secret"
 
           for ($i = 1; $i -le 360; $i++) {
-            Write-Host "Baglanti aktif. Gecen sure: $i dakika"
+            Write-Host "Alive minute: $i"
             Start-Sleep -Seconds 60
           }
