@@ -10,7 +10,6 @@ jobs:
   secure-rdp:
     runs-on: windows-latest
     timeout-minutes: 360
-
     steps:
       - name: Validate Secrets
         shell: pwsh
@@ -21,295 +20,122 @@ jobs:
           CLOUD_USER: ${{ secrets.CLOUD_USER }}
           CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
         run: |
-          $hatalar = @()
-          
-          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-            $hatalar += "RDP_PASSWORD secret eksik."
-          } elseif ($env:RDP_PASSWORD.Length -lt 12 -or
-              $env:RDP_PASSWORD -notmatch '[A-Z]' -or
-              $env:RDP_PASSWORD -notmatch '[a-z]' -or
-              $env:RDP_PASSWORD -notmatch '\d' -or
-              $env:RDP_PASSWORD -notmatch '[^a-zA-Z0-9]') {
-            $hatalar += "RDP_PASSWORD en az 12 karakter; büyük harf, küçük harf, rakam ve sembol içermeli."
+          $errors = @()
+          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) { $errors += "RDP_PASSWORD missing" }
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) { $errors += "TAILSCALE_AUTH_KEY missing" }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_URL)) { $errors += "CLOUD_URL missing" }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_USER)) { $errors += "CLOUD_USER missing" }
+          if ([string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) { $errors += "CLOUD_PASS missing" }
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host $_ -ForegroundColor Red }
+            throw "Secret eksik"
           }
-          
-          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
-            $hatalar += "TAILSCALE_AUTH_KEY secret eksik."
-          } elseif ($env:TAILSCALE_AUTH_KEY -notmatch '^tskey-auth-') {
-            $hatalar += "TAILSCALE_AUTH_KEY YANLIŞ FORMAT! 'tskey-auth-' ile başlamalı (API key değil, Auth key)."
-          }
-          
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_URL)) {
-            $hatalar += "CLOUD_URL eksik! (WebDAV linki)"
-          }
-          
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_USER)) {
-            $hatalar += "CLOUD_USER eksik! (WebDAV kullanıcı adı)"
-          }
-          
-          if ([string]::IsNullOrWhiteSpace($env:CLOUD_PASS)) {
-            $hatalar += "CLOUD_PASS eksik! (WebDAV şifresi)"
-          }
+          Write-Host "Secrets OK" -ForegroundColor Green
 
-          if ($hatalar.Count -gt 0) {
-            Write-Host "HATALAR:" -ForegroundColor Red
-            $hatalar | ForEach-Object { Write-Host "- $_" -ForegroundColor Red }
-            throw "Secret kontrolü başarısız. GitHub Settings > Secrets kısmından eksikleri ekle."
-          }
-          Write-Host "Gerekli secret kontrolleri tamamlandı." -ForegroundColor Green
-
-      - name: Configure Windows RDP
+      - name: Configure RDP
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          $ErrorActionPreference = "Stop"
+          $pass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
+          $u = Get-LocalUser "Draghyper" -ErrorAction SilentlyContinue
+          if (-not $u) { New-LocalUser "Draghyper" -Password $pass -PasswordNeverExpires:$true | Out-Null }
+          else { Set-LocalUser "Draghyper" -Password $pass }
+          Add-LocalGroupMember "Administrators" "Draghyper" -ErrorAction SilentlyContinue
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 1 -Force
+          Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name SecurityLayer -Value 2 -Force
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" -ErrorAction SilentlyContinue
+          Set-Service TermService -StartupType Automatic
+          Restart-Service TermService -Force
+          Write-Host "RDP OK"
 
-          $securePassword = ConvertTo-SecureString `
-            $env:RDP_PASSWORD -AsPlainText -Force
-
-          $user = Get-LocalUser -Name "Draghyper" -ErrorAction SilentlyContinue
-
-          if ($null -eq $user) {
-            New-LocalUser -Name "Draghyper" `
-              -Password $securePassword `
-              -Description "RDP account" | Out-Null
-          } else {
-            Set-LocalUser -Name "Draghyper" -Password $securePassword
-          }
-
-          Add-LocalGroupMember -Group "Administrators" `
-            -Member "Draghyper" -ErrorAction SilentlyContinue
-
-          Set-ItemProperty `
-            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-            -Name fDenyTSConnections -Value 0
-
-          $rdpPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-          Set-ItemProperty -Path $rdpPath -Name UserAuthentication -Value 1
-          Set-ItemProperty -Path $rdpPath -Name SecurityLayer -Value 2
-
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop" `
-            -ErrorAction SilentlyContinue
-
-          if (-not (Get-NetFirewallRule -Name "RDP-Tailscale" `
-              -ErrorAction SilentlyContinue)) {
-            New-NetFirewallRule -Name "RDP-Tailscale" `
-              -DisplayName "RDP over Tailscale" `
-              -Direction Inbound -Protocol TCP -LocalPort 3389 `
-              -Action Allow | Out-Null
-          }
-
-          Set-Service -Name TermService -StartupType Automatic
-          Restart-Service -Name TermService -Force
-
-          Write-Host "Windows RDP ayarları tamamlandı."
-
-      - name: Enable RDP Audio and Microphone Redirection
+      - name: Audio and Microphone
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-
-          $policyPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          New-Item -Path $policyPath -Force | Out-Null
-
-          # 0 = ses kaydı/mikrofon yönlendirmesi engellenmesin
-          New-ItemProperty -Path $policyPath `
-            -Name fDisableAudioCapture -PropertyType DWord `
-            -Value 0 -Force | Out-Null
-
-          # 0 = ses çalma yönlendirmesi engellenmesin
-          New-ItemProperty -Path $policyPath `
-            -Name fDisableAudioPlayback -PropertyType DWord `
-            -Value 0 -Force | Out-Null
-
-          # Ses hizmetlerini etkinleştirmeyi ve başlatmayı dene
-          foreach ($serviceName in @("AudioEndpointBuilder", "Audiosrv")) {
-            $service = Get-Service -Name $serviceName `
-              -ErrorAction SilentlyContinue
-
-            if ($null -ne $service) {
-              try {
-                Set-Service -Name $serviceName -StartupType Automatic `
-                  -ErrorAction Stop
-                Start-Service -Name $serviceName -ErrorAction Stop
-                Write-Host "$serviceName başlatıldı."
-              } catch {
-                Write-Warning "$serviceName başlatılamadı: $($_.Exception.Message)"
-              }
-            } else {
-              Write-Warning "$serviceName bu Windows kurulumunda bulunamadı."
-            }
+          $p = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
+          New-Item -Path $p -Force | Out-Null
+          New-ItemProperty -Path $p -Name fDisableAudioCapture -PropertyType DWord -Value 0 -Force | Out-Null
+          New-ItemProperty -Path $p -Name fDisableAudioPlayback -PropertyType DWord -Value 0 -Force | Out-Null
+          foreach ($s in @("AudioEndpointBuilder", "Audiosrv")) {
+            $sv = Get-Service $s -ErrorAction SilentlyContinue
+            if ($sv) { try { Set-Service $s -StartupType Automatic; Start-Service $s } catch {} }
           }
-
-          Write-Host "Mikrofon/ses yönlendirme ilkeleri:"
-          Get-ItemProperty -Path $policyPath |
-            Select-Object fDisableAudioCapture, fDisableAudioPlayback |
-            Format-List
-
-          Write-Host "Not: Mikrofonun görünmesi, RDP istemcisinin ve oturumun yönlendirmeyi desteklemesine de bağlıdır."
-
-          # Apply the computer policy before a new RDP session is created.
           gpupdate /target:computer /force
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "gpupdate başarısız oldu; kayıt defteri ilkeleri yine de yazıldı."
-          }
+          Restart-Service TermService -Force
+          Start-Sleep 3
+          Write-Host "Audio OK"
 
-          # Restart RDP after microphone redirection policy has been written.
-          Restart-Service -Name TermService -Force
-          Start-Sleep -Seconds 3
-          Write-Host "RDP servisi ses yönlendirme ilkelerinden sonra yeniden başlatıldı."
-
-      - name: Free Temporary Disk Space
+      - name: Free Disk Space
         shell: pwsh
         run: |
-          Write-Host "Disk temizleniyor..."
-          $tempPaths = @($env:TEMP, "$env:WINDIR\Temp")
-          foreach ($path in $tempPaths) {
-            if (Test-Path $path) {
-              Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue | `
-                Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-            }
+          $paths = @($env:TEMP, "$env:WINDIR\Temp")
+          foreach ($path in $paths) {
+            if (Test-Path $path) { Get-ChildItem $path -Force -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue }
           }
-          Write-Host "Geçici dosyalar temizlendi, disk alanı açıldı." -ForegroundColor Green
+          Write-Host "Disk cleaned"
 
       - name: Install Tailscale
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
-          $msi = Join-Path $env:TEMP "tailscale-setup.msi"
-          Invoke-WebRequest `
-            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" `
-            -OutFile $msi
-
-          $process = Start-Process msiexec.exe `
-            -ArgumentList "/i `"$msi`" /quiet /norestart" `
-            -Wait -PassThru
-
-          if ($process.ExitCode -notin @(0, 3010)) {
-            throw "Tailscale kurulumu başarısız. Kod: $($process.ExitCode)"
-          }
-
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-          if (-not (Test-Path $tailscale)) {
-            throw "Tailscale programı bulunamadı."
-          }
-
-          "TAILSCALE_EXE=$tailscale" |
-            Out-File -FilePath $env:GITHUB_ENV -Append
+          $msi = "$env:TEMP\ts.msi"
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile $msi
+          Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /quiet /norestart" -Wait
+          "TAILSCALE_EXE=$env:ProgramFiles\Tailscale\tailscale.exe" | Out-File $env:GITHUB_ENV -Append
 
       - name: Connect Tailscale
         shell: pwsh
         env:
           TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          $ErrorActionPreference = "Stop"
-          $hostname = "gh-runner-$env:GITHUB_RUN_ID"
-
-          & $env:TAILSCALE_EXE up `
-            --auth-key="$env:TAILSCALE_AUTH_KEY" `
-            --hostname="$hostname"
-
-          if ($LASTEXITCODE -ne 0) {
-            throw "Tailscale girişi başarısız. Auth key ve cihaz politikasını kontrol et."
-          }
-
-          Start-Sleep -Seconds 5
+          & $env:TAILSCALE_EXE up --auth-key="$env:TAILSCALE_AUTH_KEY" --hostname="gh-$env:GITHUB_RUN_ID"
+          Start-Sleep 5
           $ip = (& $env:TAILSCALE_EXE ip -4 | Select-Object -First 1).Trim()
+          "RDP_IP=$ip" | Out-File $env:GITHUB_ENV -Append
+          Write-Host "Tailscale IP: $ip"
 
-          if ([string]::IsNullOrWhiteSpace($ip)) {
-            throw "Tailscale IPv4 adresi alınamadı."
-          }
-
-          "RDP_IP=$ip" | Out-File -FilePath $env:GITHUB_ENV -Append
-          Write-Host "Tailscale bağlantısı hazır."
-          Write-Host "RDP IP: $ip"
-          Write-Host "Kullanıcı adı: Draghyper"
-
-      - name: Install Rclone and Mount WebDAV as Z: Drive
+      - name: Mount WebDAV Z Drive
         shell: pwsh
         env:
           CLOUD_URL: ${{ secrets.CLOUD_URL }}
           CLOUD_USER: ${{ secrets.CLOUD_USER }}
           CLOUD_PASS: ${{ secrets.CLOUD_PASS }}
         run: |
-          $ErrorActionPreference = "Stop"
-          Write-Host "Rclone indiriliyor..."
-          curl.exe -sL `
-            -o "$env:TEMP\rclone.zip" `
-            "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
-          Expand-Archive `
-            -Path "$env:TEMP\rclone.zip" `
-            -DestinationPath "$env:TEMP\rclone" -Force
-          $rcloneDir = Get-ChildItem `
-            -Path "$env:TEMP\rclone" `
-            -Filter "rclone-*-windows-amd64" | Select-Object -First 1
-          $rcloneExe = Join-Path $rcloneDir.FullName "rclone.exe"
-          $env:PATH += ";$($rcloneDir.FullName)"
-          Write-Host "WebDAV yapılandırılıyor..."
+          curl.exe -sL -o "$env:TEMP\rclone.zip" "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
+          Expand-Archive "$env:TEMP\rclone.zip" "$env:TEMP\rclone" -Force
+          $r = Get-ChildItem "$env:TEMP\rclone" -Filter "rclone-*-windows-amd64" | Select-Object -First 1
+          $exe = "$($r.FullName)\rclone.exe"
           $env:RCLONE_CONFIG_MYDRIVE_TYPE = "webdav"
           $env:RCLONE_CONFIG_MYDRIVE_URL = $env:CLOUD_URL
           $env:RCLONE_CONFIG_MYDRIVE_USER = $env:CLOUD_USER
           $env:RCLONE_CONFIG_MYDRIVE_PASS = $env:CLOUD_PASS
           $env:RCLONE_CONFIG_MYDRIVE_VENDOR = "other"
-          Write-Host "WebDAV bağlanıyor..."
-          Start-Process `
-            -FilePath $rcloneExe `
-            -ArgumentList "mount mydrive: Z: --vfs-cache-mode writes --volname 'Cloud Storage'" `
-            -NoNewWindow -PassThru
-          Start-Sleep -Seconds 15
+          Start-Process $exe -ArgumentList "mount mydrive: Z: --vfs-cache-mode writes --volname Cloud" -NoNewWindow -PassThru
+          Start-Sleep 15
           if (Test-Path "Z:\") {
-            Write-Host "WebDAV Z: sürücüsüne bağlandı!" -ForegroundColor Green
-            New-Item -ItemType Directory -Force -Path "Z:\Downloads" | Out-Null
-            New-Item -ItemType Directory -Force -Path "Z:\Temp" | Out-Null
+            Write-Host "WebDAV Z: OK" -ForegroundColor Green
+            New-Item -ItemType Directory -Force "Z:\Downloads", "Z:\Temp" | Out-Null
             $dl = "C:\Users\Draghyper\Downloads"
             if (Test-Path $dl) { Remove-Item $dl -Recurse -Force -ErrorAction SilentlyContinue }
             cmd /c mklink /J $dl "Z:\Downloads"
-            $tmp = $env:TEMP
-            if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
-            cmd /c mklink /J $tmp "Z:\Temp"
-            Write-Host "İndirmeler Z: sürücüsüne yönlendirildi." -ForegroundColor Green
+            $t = $env:TEMP
+            if (Test-Path $t) { Remove-Item $t -Recurse -Force -ErrorAction SilentlyContinue }
+            cmd /c mklink /J $t "Z:\Temp"
+            Write-Host "Downloads redirected to Z:" -ForegroundColor Green
           } else {
-            Write-Host "UYARI: Z: sürücüsü bağlanamadı. CLOUD_URL, USER veya PASS değerlerini kontrol et." -ForegroundColor Red
+            Write-Host "WARNING: Z: drive failed. Check CLOUD_URL/USER/PASS" -ForegroundColor Red
           }
 
       - name: Open Microsoft Store
         shell: pwsh
         run: |
-          Write-Host "Microsoft Store açılıyor..."
           Start-Process "explorer.exe" -ArgumentList "shell:AppsFolder\Microsoft.WindowsStore_8wekyb3d8bbwe!App"
-          Write-Host "Microsoft Store açıldı. RDP ile bağlandıktan sonra Store'dan Minecraft indirebilirsiniz." -ForegroundColor Green
+          Write-Host "Microsoft Store opened" -ForegroundColor Green
 
-      - name: Verify RDP and Audio Policies
+      - name: Keep Alive
         shell: pwsh
         run: |
-          $rdp = Get-ItemProperty `
-            "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server"
-          Write-Host "RDP etkin: $($rdp.fDenyTSConnections -eq 0)"
-
-          $policy = "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services"
-          $audio = Get-ItemProperty -Path $policy
-
-          Write-Host "Mikrofon yönlendirmesi engellenmiyor: $($audio.fDisableAudioCapture -eq 0)"
-          Write-Host "Ses çıkışı yönlendirmesi engellenmiyor: $($audio.fDisableAudioPlayback -eq 0)"
-
-          Get-NetTCPConnection -LocalPort 3389 -State Listen `
-            -ErrorAction SilentlyContinue |
-            Select-Object LocalAddress, LocalPort, State |
-            Format-Table
-
-      - name: Maintain Connection
-        shell: pwsh
-        env:
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-        run: |
-          Write-Host "RDP oturumu 6 saate kadar açık tutulacak."
-          Write-Host "Adres: $env:RDP_IP"
-          Write-Host "Kullanıcı adı: Draghyper"
-          Write-Host "Parola, GitHub RDP_PASSWORD secret değeridir."
-          Write-Host "Parola güvenlik nedeniyle günlükte gösterilmiyor."
-
-          for ($i = 1; $i -le 360; $i++) {
-            Write-Host "Bağlantı aktif. Geçen süre: $i dakika"
-            Start-Sleep -Seconds 60
-          }
+          Write-Host "RDP IP: $env:RDP_IP"
+          Write-Host "User: Draghyper"
+          Write-Host "Session open 6 hours"
+          for ($i = 1; $i -le 360; $i++) { Start-Sleep 60 }
